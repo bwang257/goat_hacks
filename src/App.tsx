@@ -37,6 +37,37 @@ interface WalkingTimeResult {
   station_2: Station;
 }
 
+interface NextTrainInfo {
+  departure_time: string;
+  arrival_time: string;
+  minutes_until_departure: number;
+  total_trip_minutes: number;
+  status: string;
+  vehicle_id?: string;
+  countdown_text: string;
+}
+
+interface StationCoordinate {
+  station_id: string;
+  station_name: string;
+  latitude: number;
+  longitude: number;
+}
+
+interface SameLineRouteResult {
+  is_same_line: boolean;
+  line_name?: string;
+  line_color?: string;
+  from_station_name?: string;
+  to_station_name?: string;
+  direction_name?: string;
+  scheduled_time_minutes?: number;
+  distance_meters?: number;
+  next_trains?: NextTrainInfo[];
+  message?: string;
+  path_coordinates?: StationCoordinate[];
+}
+
 // Custom marker icons for selected stations
 const startIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
@@ -56,7 +87,104 @@ const endIcon = new L.Icon({
   shadowSize: [41, 41]
 });
 
+// Create custom T logo markers for each line
+function createTMarker(lines: string[]): L.DivIcon {
+  // Determine the color based on the primary line
+  const lineColors: { [key: string]: string } = {
+    'Red': '#DA291C',
+    'Orange': '#ED8B00',
+    'Blue': '#003DA5',
+    'Green': '#00843D',
+    'Green-B': '#00843D',
+    'Green-C': '#00843D',
+    'Green-D': '#00843D',
+    'Green-E': '#00843D',
+    'Silver': '#7C878E',
+    'Mattapan': '#DA291C'
+  };
+
+  // Get the primary line color
+  let primaryColor = '#000000';
+  for (const line of lines) {
+    const cleanLine = line.replace(' Line', '').trim();
+    if (lineColors[cleanLine]) {
+      primaryColor = lineColors[cleanLine];
+      break;
+    }
+  }
+
+  // Create multi-line display if station has multiple lines
+  const lineIndicators = lines.map(line => {
+    const cleanLine = line.replace(' Line', '').trim();
+    const color = lineColors[cleanLine] || '#000000';
+    return `<div style="background-color: ${color}; width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin: 0 1px;"></div>`;
+  }).join('');
+
+  return L.divIcon({
+    className: 't-marker',
+    html: `
+      <div style="
+        background-color: white;
+        border: 2px solid ${primaryColor};
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        font-size: 14px;
+        color: ${primaryColor};
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        cursor: pointer;
+      ">
+        T
+      </div>
+      <div style="
+        position: absolute;
+        top: 26px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: white;
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        padding: 2px 4px;
+        white-space: nowrap;
+        display: flex;
+        gap: 2px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+      ">
+        ${lineIndicators}
+      </div>
+    `,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -12]
+  });
+}
+
 const API_BASE = 'http://localhost:8000';
+
+// Helper functions for time formatting
+function formatTime(isoString: string): string {
+  const date = new Date(isoString);
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+  const displayMinutes = minutes.toString().padStart(2, '0');
+  return `${displayHours}:${displayMinutes} ${ampm}`;
+}
+
+function formatDuration(minutes: number): string {
+  if (minutes < 1) {
+    return 'Now';
+  } else if (minutes < 2) {
+    return '1 min';
+  } else {
+    return `${Math.round(minutes)} min`;
+  }
+}
 
 // Map theme options
 const MAP_THEMES = {
@@ -227,10 +355,18 @@ function App() {
   const [startStation, setStartStation] = useState<Station | null>(null);
   const [endStation, setEndStation] = useState<Station | null>(null);
   const [result, setResult] = useState<WalkingTimeResult | null>(null);
+  const [sameLineRoute, setSameLineRoute] = useState<SameLineRouteResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectingStation, setSelectingStation] = useState<'start' | 'end' | null>(null);
   const [routeGeometry, setRouteGeometry] = useState<[number, number][]>([]);
-  const [mapTheme, setMapTheme] = useState<keyof typeof MAP_THEMES>('standard');
+  const [walkingSpeed, setWalkingSpeed] = useState<number>(5.0); // km/h
+
+  // Auto-calculate when both stations are selected or walking speed changes
+  useEffect(() => {
+    if (startStation && endStation && !loading) {
+      calculateRoute();
+    }
+  }, [startStation, endStation, walkingSpeed]);
 
   // Load all stations on mount
   useEffect(() => {
@@ -262,25 +398,44 @@ function App() {
     }
   };
 
-  const calculateWalkingTime = async () => {
+  const calculateRoute = async () => {
     if (!startStation || !endStation) {
-      alert('Please select both start and end stations');
       return;
     }
 
     setLoading(true);
     setResult(null);
+    setSameLineRoute(null);
     setRouteGeometry([]);
 
     try {
-      // Calculate walking time
+      // First, check if stations are on the same line
+      try {
+        const sameLineResponse = await fetch(
+          `${API_BASE}/api/realtime/same-line?station_id_1=${startStation.id}&station_id_2=${endStation.id}&num_trains=3`
+        );
+        
+        if (sameLineResponse.ok) {
+          const sameLineData = await sameLineResponse.json();
+          
+          if (sameLineData.is_same_line) {
+            setSameLineRoute(sameLineData);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch (err) {
+        console.log('Same-line check not available, falling back to walking time');
+      }
+
+      // If not same line, calculate walking time
       const response = await fetch(`${API_BASE}/api/walking-time`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           station_id_1: startStation.id,
           station_id_2: endStation.id,
-          walking_speed_kmh: 5.0
+          walking_speed_kmh: walkingSpeed
         })
       });
 
@@ -307,59 +462,44 @@ function App() {
         }
       }
     } catch (err) {
-      console.error('Error calculating walking time:', err);
-      alert('Error calculating walking time. Please try again.');
+      console.error('Error calculating route:', err);
     } finally {
       setLoading(false);
     }
+  };
+
+  const calculateWalkingTime = async () => {
+    if (!startStation || !endStation) {
+      alert('Please select both start and end stations');
+      return;
+    }
+
+    await calculateRoute();
   };
 
   const clearSelection = () => {
     setStartStation(null);
     setEndStation(null);
     setResult(null);
+    setSameLineRoute(null);
     setRouteGeometry([]);
   };
-
-  const currentTheme = MAP_THEMES[mapTheme];
 
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
       {/* Sidebar */}
       <div style={{
-        width: '400px',
+        width: '380px',
         padding: '1.5rem',
         backgroundColor: '#f8f9fa',
         overflowY: 'auto',
         borderRight: '1px solid #ddd'
       }}>
-        <h1 style={{ marginTop: 0 }}>MBTA Walking Time Calculator</h1>
+        <h1 style={{ marginTop: 0, fontSize: '1.5rem' }}>MBTA Route Finder</h1>
         
-        <p style={{ color: '#666', fontSize: '0.9rem' }}>
-          Search for stations or click on the map to select them.
+        <p style={{ color: '#999', fontSize: '0.85rem', marginBottom: '1.5rem' }}>
+          Select two stations to find the best route between them
         </p>
-
-        {/* Map Theme Selector */}
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
-            Map Theme
-          </label>
-          <select
-            value={mapTheme}
-            onChange={(e) => setMapTheme(e.target.value as keyof typeof MAP_THEMES)}
-            style={{
-              width: '100%',
-              padding: '0.5rem',
-              fontSize: '1rem',
-              border: '1px solid #ccc',
-              borderRadius: '4px'
-            }}
-          >
-            {Object.entries(MAP_THEMES).map(([key, theme]) => (
-              <option key={key} value={key}>{theme.name}</option>
-            ))}
-          </select>
-        </div>
 
         {/* Start Station */}
         <StationSearch
@@ -367,24 +507,6 @@ function App() {
           onSelect={setStartStation}
           selectedStation={startStation}
         />
-        
-        <button
-          onClick={() => setSelectingStation('start')}
-          disabled={selectingStation === 'start'}
-          style={{
-            width: '100%',
-            padding: '0.5rem',
-            marginBottom: '1rem',
-            backgroundColor: selectingStation === 'start' ? '#28a745' : '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '0.9rem'
-          }}
-        >
-          {selectingStation === 'start' ? 'Click on map to select...' : 'Select on Map'}
-        </button>
 
         {/* End Station */}
         <StationSearch
@@ -392,44 +514,26 @@ function App() {
           onSelect={setEndStation}
           selectedStation={endStation}
         />
-        
-        <button
-          onClick={() => setSelectingStation('end')}
-          disabled={selectingStation === 'end'}
-          style={{
-            width: '100%',
-            padding: '0.5rem',
-            marginBottom: '1rem',
-            backgroundColor: selectingStation === 'end' ? '#dc3545' : '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '0.9rem'
-          }}
-        >
-          {selectingStation === 'end' ? 'Click on map to select...' : 'Select on Map'}
-        </button>
 
-        {/* Calculate Button */}
-        <button
-          onClick={calculateWalkingTime}
-          disabled={!startStation || !endStation || loading}
-          style={{
-            width: '100%',
-            padding: '0.75rem',
-            marginBottom: '0.5rem',
-            backgroundColor: startStation && endStation ? '#28a745' : '#6c757d',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: startStation && endStation ? 'pointer' : 'not-allowed',
-            fontSize: '1rem',
-            fontWeight: 'bold'
-          }}
-        >
-          {loading ? 'Calculating...' : 'Calculate Walking Time'}
-        </button>
+        {/* Walking Speed Control */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Walking Speed: {walkingSpeed} km/h
+          </label>
+          <input
+            type="range"
+            min="2"
+            max="8"
+            step="0.5"
+            value={walkingSpeed}
+            onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
+            style={{ width: '100%' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#666' }}>
+            <span>Slow (2 km/h)</span>
+            <span>Fast (8 km/h)</span>
+          </div>
+        </div>
 
         <button
           onClick={clearSelection}
@@ -449,43 +553,84 @@ function App() {
         </button>
 
         {/* Results */}
-        {result && (
+        {sameLineRoute && sameLineRoute.is_same_line && (
+          <div style={{
+            backgroundColor: 'white',
+            padding: '1rem',
+            borderRadius: '8px',
+            border: `3px solid #${sameLineRoute.line_color}`
+          }}>
+            <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: `#${sameLineRoute.line_color}` }}>
+              {sameLineRoute.line_name}
+            </h2>
+            
+            <div style={{ marginBottom: '0.75rem' }}>
+              <strong>{sameLineRoute.from_station_name}</strong> → <strong>{sameLineRoute.to_station_name}</strong>
+            </div>
+            
+            <div style={{
+              backgroundColor: '#f0f8ff',
+              padding: '0.75rem',
+              borderRadius: '4px',
+              marginBottom: '1rem'
+            }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: `#${sameLineRoute.line_color}` }}>
+                {formatDuration(sameLineRoute.scheduled_time_minutes)}
+              </div>
+            </div>
+
+            <h3 style={{ marginTop: '1rem', marginBottom: '0.75rem', fontSize: '0.95rem' }}>Next Trains</h3>
+            <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
+              {sameLineRoute.next_trains && sameLineRoute.next_trains.length > 0 ? (
+                sameLineRoute.next_trains.map((train, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      backgroundColor: '#f8f9fa',
+                      padding: '0.5rem',
+                      marginBottom: '0.4rem',
+                      borderRadius: '3px',
+                      borderLeft: `3px solid #${sameLineRoute.line_color}`
+                    }}
+                  >
+                    <div style={{ fontWeight: 'bold', color: `#${sameLineRoute.line_color}` }}>
+                      {formatDuration(train.minutes_until_departure)} • {formatTime(train.departure_time)}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                      Arrives {formatTime(train.arrival_time)}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: '#999', fontSize: '0.85rem' }}>No upcoming trains</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {result && !sameLineRoute?.is_same_line && (
           <div style={{
             backgroundColor: 'white',
             padding: '1rem',
             borderRadius: '8px',
             border: '1px solid #ddd'
           }}>
-            <h2 style={{ marginTop: 0, fontSize: '1.25rem' }}>Result</h2>
+            <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: '#0066cc' }}>Walking Route</h2>
             
-            <div style={{ marginBottom: '1rem' }}>
-              <strong>From:</strong> {result.station_1.name}
-              <div style={{ fontSize: '0.85rem', color: '#666' }}>
-                {result.station_1.lines.join(', ')}
-              </div>
-            </div>
-            
-            <div style={{ marginBottom: '1rem' }}>
-              <strong>To:</strong> {result.station_2.name}
-              <div style={{ fontSize: '0.85rem', color: '#666' }}>
-                {result.station_2.lines.join(', ')}
-              </div>
+            <div style={{ marginBottom: '0.75rem' }}>
+              <strong>{result.station_1.name}</strong> → <strong>{result.station_2.name}</strong>
             </div>
             
             <div style={{
               backgroundColor: '#e7f3ff',
-              padding: '1rem',
-              borderRadius: '4px',
-              marginTop: '1rem'
+              padding: '0.75rem',
+              borderRadius: '4px'
             }}>
-              <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#0066cc' }}>
-                {result.duration_minutes} min
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0066cc' }}>
+                {formatDuration(result.duration_minutes)}
               </div>
-              <div style={{ fontSize: '0.9rem', color: '#666' }}>
-                {result.distance_km} km ({result.distance_meters.toFixed(0)} meters)
-              </div>
-              <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.5rem' }}>
-                Walking at {result.walking_speed_kmh} km/h
+              <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                {result.distance_km} km
               </div>
             </div>
           </div>
@@ -500,8 +645,8 @@ function App() {
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer
-            url={currentTheme.url}
-            attribution={currentTheme.attribution}
+            url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
           />
           
           <MapClickHandler
@@ -514,33 +659,86 @@ function App() {
             endStation={endStation}
           />
 
-          {/* Show all stations */}
+          {/* Show all stations with T logo markers */}
           {stations.map(station => (
             <Marker
               key={station.id}
               position={[station.latitude, station.longitude]}
+              icon={createTMarker(station.lines)}
+              eventHandlers={{
+                click: () => {
+                  // Allow clicking on station markers to select them
+                  if (!startStation) {
+                    setStartStation(station);
+                  } else if (!endStation) {
+                    setEndStation(station);
+                  }
+                }
+              }}
             >
               <Popup>
-                <strong>{station.name}</strong><br />
-                {station.lines.join(', ')}<br />
-                <button
-                  onClick={() => setStartStation(station)}
-                  style={{ marginRight: '5px', marginTop: '5px' }}
-                >
-                  Set as Start
-                </button>
-                <button
-                  onClick={() => setEndStation(station)}
-                  style={{ marginTop: '5px' }}
-                >
-                  Set as End
-                </button>
+                <div>
+                  <strong>{station.name}</strong><br />
+                  <div style={{ marginTop: '4px' }}>
+                    {station.lines.map((line, idx) => {
+                      const lineColors: { [key: string]: string } = {
+                        'Red': '#DA291C',
+                        'Orange': '#ED8B00',
+                        'Blue': '#003DA5',
+                        'Green': '#00843D',
+                        'Green-B': '#00843D',
+                        'Green-C': '#00843D',
+                        'Green-D': '#00843D',
+                        'Green-E': '#00843D',
+                        'Silver': '#7C878E',
+                        'Mattapan': '#DA291C'
+                      };
+                      const cleanLine = line.replace(' Line', '').trim();
+                      const color = lineColors[cleanLine] || '#000000';
+                      return (
+                        <span
+                          key={idx}
+                          style={{
+                            display: 'inline-block',
+                            backgroundColor: color,
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '3px',
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            marginRight: '4px',
+                            marginBottom: '2px'
+                          }}
+                        >
+                          {cleanLine}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
+                    {station.municipality}
+                  </div>
+                </div>
               </Popup>
             </Marker>
           ))}
 
+          {/* Same-line route line */}
+          {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.path_coordinates && sameLineRoute.path_coordinates.length > 0 && (
+            <Polyline
+              positions={sameLineRoute.path_coordinates.map(coord => [coord.latitude, coord.longitude])}
+              pathOptions={{
+                color: `#${sameLineRoute.line_color}`,
+                weight: 6,
+                opacity: 0.8,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }}
+            />
+          )}
+
           {/* Walking route line */}
-          {routeGeometry.length > 0 && (
+          {routeGeometry.length > 0 && !sameLineRoute?.is_same_line && (
             <Polyline
               positions={routeGeometry}
               pathOptions={{
@@ -580,38 +778,6 @@ function App() {
             </Marker>
           )}
         </MapContainer>
-
-        {selectingStation && (
-          <div style={{
-            position: 'absolute',
-            top: '20px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            backgroundColor: selectingStation === 'start' ? '#28a745' : '#dc3545',
-            color: 'white',
-            padding: '1rem 2rem',
-            borderRadius: '8px',
-            zIndex: 1000,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-            fontWeight: 'bold'
-          }}>
-            Click on the map to select {selectingStation === 'start' ? 'START' : 'END'} station
-            <button
-              onClick={() => setSelectingStation(null)}
-              style={{
-                marginLeft: '1rem',
-                padding: '0.25rem 0.5rem',
-                backgroundColor: 'white',
-                color: '#333',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer'
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );

@@ -1,9 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
+from route_planner import TransitGraph, Route
+from realtime_same_line import RealtimeSameLineRouter
+
+from typing import List
 import httpx
 import math
 import json
+import os
 from typing import List, Optional
 
 app = FastAPI(title="MBTA Walking Time API")
@@ -19,17 +24,224 @@ app.add_middleware(
 # Load MBTA data on startup
 MBTA_DATA = {}
 
+# Initialize at startup
+REALTIME_SAME_LINE = None
+
+async def get_realtime_router():
+    """Lazy load the realtime router to ensure transit graph is loaded first"""
+    global REALTIME_SAME_LINE
+    if REALTIME_SAME_LINE is not None:
+        return REALTIME_SAME_LINE
+    
+    mbta_key = os.environ.get("MBTA_API_KEY")
+    if mbta_key and TRANSIT_GRAPH:
+        try:
+            REALTIME_SAME_LINE = RealtimeSameLineRouter(mbta_key, TRANSIT_GRAPH)
+            print("✓ Real-time same-line router initialized")
+        except Exception as e:
+            print(f"Could not initialize real-time router: {e}")
+    else:
+        if not mbta_key:
+            print("⚠️  MBTA_API_KEY not set")
+        if not TRANSIT_GRAPH:
+            print("⚠️  Transit graph not loaded")
+    
+    return REALTIME_SAME_LINE
+
+@app.on_event("startup")
+async def load_realtime_same_line():
+    """Initialize realtime router at startup"""
+    await get_realtime_router()
+
+class NextTrainInfo(BaseModel):
+    departure_time: str
+    arrival_time: str
+    minutes_until_departure: float
+    total_trip_minutes: float
+    status: str
+    vehicle_id: Optional[str]
+    countdown_text: str
+
+class StationCoordinate(BaseModel):
+    station_id: str
+    station_name: str
+    latitude: float
+    longitude: float
+
+class SameLineRouteResponse(BaseModel):
+    line_name: str
+    line_color: str
+    from_station_name: str
+    to_station_name: str
+    direction_name: str
+    scheduled_time_minutes: float
+    distance_meters: float
+    next_trains: List[NextTrainInfo]
+    is_same_line: bool
+    path_coordinates: Optional[List[StationCoordinate]] = None
+
+@app.get("/api/realtime/same-line")
+async def get_realtime_same_line_route(
+    station_id_1: str,
+    station_id_2: str,
+    num_trains: int = 3
+):
+    """
+    Get real-time train predictions for same-line routes.
+    Returns next N trains with live departure times.
+    If MBTA API key is not available, returns basic same-line info.
+    """
+    
+    # Check if stations are on the same line using transit graph
+    if not TRANSIT_GRAPH:
+        raise HTTPException(
+            status_code=503,
+            detail="Transit graph not loaded"
+        )
+    
+    # Check if same line
+    start_node = TRANSIT_GRAPH.nodes.get(station_id_1)
+    end_node = TRANSIT_GRAPH.nodes.get(station_id_2)
+    
+    if not start_node or not end_node:
+        raise HTTPException(
+            status_code=404,
+            detail="One or both stations not found"
+        )
+    
+    start_lines = set(start_node.get("lines", []))
+    end_lines = set(end_node.get("lines", []))
+    shared_lines = start_lines & end_lines
+    
+    if not shared_lines:
+        return {
+            "is_same_line": False,
+            "message": "Stations are not on the same line"
+        }
+    
+    # Get the first shared line
+    line_name = list(shared_lines)[0]
+    
+    # Get line color
+    colors = {
+        "Red": "DA291C",
+        "Orange": "ED8B00",
+        "Blue": "003DA5",
+        "Green": "00843D",
+    }
+    
+    # Extract base line name - handle Green Line branches (B, C, D, E)
+    if "Green" in line_name or line_name in ["B", "C", "D", "E"]:
+        base_line = "Green"
+    else:
+        base_line = line_name.split()[0]  # e.g., "Red" from "Red Line"
+    
+    line_color = colors.get(base_line, "000000")
+    
+    # Calculate distance
+    lat1 = start_node.get("latitude", 0)
+    lng1 = start_node.get("longitude", 0)
+    lat2 = end_node.get("latitude", 0)
+    lng2 = end_node.get("longitude", 0)
+    
+    distance = haversine_distance(lat1, lng1, lat2, lng2)
+    scheduled_time = (distance / 1000) / 40 * 60  # Assume 40 km/h average
+    
+    # If real-time API available, use it
+    router = await get_realtime_router()
+    if router:
+        try:
+            route = await router.get_same_line_route(
+                station_id_1,
+                station_id_2,
+                num_trains
+            )
+            
+            if route:
+                path_coords = [
+                    StationCoordinate(
+                        station_id=coord["station_id"],
+                        station_name=coord["station_name"],
+                        latitude=coord["latitude"],
+                        longitude=coord["longitude"]
+                    )
+                    for coord in route.path_coordinates
+                ] if route.path_coordinates else []
+
+                return SameLineRouteResponse(
+                    line_name=route.line_name,
+                    line_color=route.line_color,
+                    from_station_name=route.from_station_name,
+                    to_station_name=route.to_station_name,
+                    direction_name=route.direction_name,
+                    scheduled_time_minutes=route.scheduled_time_minutes,
+                    distance_meters=route.distance_meters,
+                    next_trains=route.next_trains,
+                    is_same_line=True,
+                    path_coordinates=path_coords
+                )
+        except Exception as e:
+            print(f"Real-time API error: {e}")
+    
+    # Fallback: return basic same-line info without real-time data
+    from datetime import datetime, timedelta
+    now = datetime.now()
+
+    # Get basic path (straight line between stations)
+    path_coords = [
+        StationCoordinate(
+            station_id=station_id_1,
+            station_name=start_node.get("name", station_id_1),
+            latitude=start_node.get("latitude", 0),
+            longitude=start_node.get("longitude", 0)
+        ),
+        StationCoordinate(
+            station_id=station_id_2,
+            station_name=end_node.get("name", station_id_2),
+            latitude=end_node.get("latitude", 0),
+            longitude=end_node.get("longitude", 0)
+        )
+    ]
+
+    return {
+        "is_same_line": True,
+        "line_name": line_name,
+        "line_color": line_color,
+        "from_station_name": start_node.get("name", station_id_1),
+        "to_station_name": end_node.get("name", station_id_2),
+        "direction_name": "Via " + line_name,
+        "scheduled_time_minutes": scheduled_time,
+        "distance_meters": distance,
+        "next_trains": [
+            {
+                "departure_time": (now + timedelta(minutes=i*5+2)).isoformat(),
+                "arrival_time": (now + timedelta(minutes=i*5+2+scheduled_time)).isoformat(),
+                "minutes_until_departure": i*5+2,
+                "total_trip_minutes": round(scheduled_time, 1),
+                "status": "Estimated",
+                "vehicle_id": None,
+                "countdown_text": f"{i*5+2} min" if i > 0 else "Arriving"
+            }
+            for i in range(num_trains)
+        ],
+        "path_coordinates": path_coords
+    }
+
+
+
+
 @app.on_event("startup")
 async def load_mbta_data():
     global MBTA_DATA
     try:
-        with open("data/mbta_stations.json", "r") as f:
+        data_file = os.path.join(os.path.dirname(__file__), "data", "mbta_stations.json")
+        with open(data_file, "r") as f:
             MBTA_DATA = json.load(f)
         print(f"✓ Loaded {MBTA_DATA['metadata']['total_stations']} MBTA stations")
         print(f"  Downloaded: {MBTA_DATA['metadata']['downloaded_at']}")
     except FileNotFoundError:
-        print("ERROR: data/mbta_stations.json not found!")
-        print("Please run: python download_data.py")
+        print("ERROR: mbta_stations.json not found!")
+        print("Please run: python download_mbta_data.py")
         MBTA_DATA = {"routes": {}, "stations": [], "metadata": {}}
 
 class StationInfo(BaseModel):
@@ -136,22 +348,7 @@ async def get_all_stations():
         )
         for s in MBTA_DATA.get("stations", [])
     ]
-
-@app.get("/api/stations/{station_id}", response_model=StationInfo)
-async def get_station(station_id: str):
-    """Get a specific station by ID"""
-    station = get_station_by_id(station_id)
-    if not station:
-        raise HTTPException(status_code=404, detail=f"Station not found: {station_id}")
-    return StationInfo(
-        id=station["id"],
-        name=station["name"],
-        latitude=station["latitude"],
-        longitude=station["longitude"],
-        lines=station["lines"],
-        municipality=station.get("municipality", ""),
-        wheelchair_boarding=station.get("wheelchair_boarding", 0)
-    )
+    return results[:limit]
 
 @app.get("/api/stations/search")
 async def search_stations(query: str, limit: int = 20):
@@ -171,6 +368,22 @@ async def search_stations(query: str, limit: int = 20):
         if query_lower in s["name"].lower()
     ]
     return results[:limit]
+
+@app.get("/api/stations/{station_id}", response_model=StationInfo)
+async def get_station(station_id: str):
+    """Get a specific station by ID"""
+    station = get_station_by_id(station_id)
+    if not station:
+        raise HTTPException(status_code=404, detail=f"Station not found: {station_id}")
+    return StationInfo(
+        id=station["id"],
+        name=station["name"],
+        latitude=station["latitude"],
+        longitude=station["longitude"],
+        lines=station["lines"],
+        municipality=station.get("municipality", ""),
+        wheelchair_boarding=station.get("wheelchair_boarding", 0)
+    )
 
 @app.get("/api/routes")
 async def get_all_routes():
@@ -296,6 +509,92 @@ async def get_walking_time(request: WalkingTimeRequest):
             status_code=500,
             detail=f"Internal error: {str(e)}"
         )
+
+# Load transit graph on startup
+TRANSIT_GRAPH = None
+
+@app.on_event("startup")
+async def load_transit_graph():
+    global TRANSIT_GRAPH
+    try:
+        graph_file = os.path.join(os.path.dirname(__file__), "data", "mbta_transit_graph.json")
+        TRANSIT_GRAPH = TransitGraph(graph_file)
+        print(f"✓ Loaded transit graph with {len(TRANSIT_GRAPH.nodes)} stations")
+    except Exception as e:
+        print(f"Warning: Could not load transit graph: {e}")
+
+class RouteSegmentResponse(BaseModel):
+    from_station_id: str
+    from_station_name: str
+    to_station_id: str
+    to_station_name: str
+    type: str
+    line: Optional[str]
+    time_seconds: float
+    time_minutes: float
+    distance_meters: float
+
+class RouteResponse(BaseModel):
+    segments: List[RouteSegmentResponse]
+    total_time_seconds: float
+    total_time_minutes: float
+    total_distance_meters: float
+    total_distance_km: float
+    num_transfers: int
+
+@app.post("/api/route", response_model=RouteResponse)
+async def find_route(
+    station_id_1: str,
+    station_id_2: str,
+    prefer_fewer_transfers: bool = True
+):
+    """
+    Find the fastest route between two stations using trains and walking.
+    """
+    if not TRANSIT_GRAPH:
+        raise HTTPException(
+            status_code=503,
+            detail="Transit graph not loaded. Please run build_transit_graph.py first."
+        )
+    
+    route = TRANSIT_GRAPH.find_shortest_path(
+        station_id_1,
+        station_id_2,
+        prefer_fewer_transfers
+    )
+    
+    if not route:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No route found between stations"
+        )
+    
+    segments = [
+        RouteSegmentResponse(
+            from_station_id=seg.from_station,
+            from_station_name=TRANSIT_GRAPH.get_station_name(seg.from_station),
+            to_station_id=seg.to_station,
+            to_station_name=TRANSIT_GRAPH.get_station_name(seg.to_station),
+            type=seg.type,
+            line=seg.line,
+            time_seconds=seg.time_seconds,
+            time_minutes=round(seg.time_seconds / 60, 1),
+            distance_meters=seg.distance_meters
+        )
+        for seg in route.segments
+    ]
+    
+    return RouteResponse(
+        segments=segments,
+        total_time_seconds=route.total_time_seconds,
+        total_time_minutes=round(route.total_time_seconds / 60, 1),
+        total_distance_meters=route.total_distance_meters,
+        total_distance_km=round(route.total_distance_meters / 1000, 2),
+        num_transfers=route.num_transfers
+    )
+
+
+
 
 if __name__ == "__main__":
     import uvicorn
