@@ -1,0 +1,18 @@
+{
+  "place-pktrm": {
+    "Red-to-Green": 85,
+    "Red-to-Orange": 120,
+    "Green-to-Red": 85,
+    "Green-to-Orange": 95,
+    "Orange-to-Red": 120,
+    "Orange-to-Green": 95
+  },
+  "place-dwnxg": {
+    "Red-to-Orange": 45,
+    "Orange-to-Red": 45
+  },
+  "place-state": {
+    "Orange-to-Blue": 110,
+    "Blue-to-Orange": 110
+  }
+}
