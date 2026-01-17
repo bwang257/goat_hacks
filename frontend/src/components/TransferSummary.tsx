@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { Station, TransferOption } from '../types';
 import { ConfidenceBadge } from './ConfidenceBadge';
 
@@ -42,7 +43,31 @@ export function TransferSummary({
 
   const arrivalTime = new Date(transferOption.incoming_prediction.arrival_time);
   const departureTime = new Date(transferOption.outgoing_prediction.arrival_time);
-  const walkDistance = transferOption.walk_time_seconds * walkingSpeed;
+  const [timeUntilArrival, setTimeUntilArrival] = useState<number>(0);
+  const [timeUntilDeparture, setTimeUntilDeparture] = useState<number>(0);
+
+  useEffect(() => {
+    const updateCountdown = () => {
+      const now = Date.now();
+      const arrivalMs = arrivalTime.getTime();
+      const departureMs = departureTime.getTime();
+      
+      setTimeUntilArrival(Math.max(0, Math.floor((arrivalMs - now) / 1000)));
+      setTimeUntilDeparture(Math.max(0, Math.floor((departureMs - now) / 1000)));
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+
+    return () => clearInterval(interval);
+  }, [arrivalTime, departureTime]);
+
+  const formatCountdown = (seconds: number): string => {
+    if (seconds <= 0) return 'arrived';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
+  };
 
   return (
     <div className="bg-white rounded-lg shadow-lg p-6 max-w-md">
@@ -65,16 +90,19 @@ export function TransferSummary({
 
       <div className="border-t pt-4 space-y-2">
         <div className="text-sm">
-          <strong>Arrival at transfer:</strong>{' '}
-          {arrivalTime.toLocaleTimeString()}
+          <strong>Arrival at transfer:</strong> {arrivalTime.toLocaleTimeString()}
+          {timeUntilArrival > 0 && (
+            <span className="text-gray-500 ml-2">(in {formatCountdown(timeUntilArrival)})</span>
+          )}
         </div>
         <div className="text-sm">
-          <strong>Walk time:</strong> {Math.round(transferOption.walk_time_seconds)}s
-          ({Math.round(walkDistance)}m @ {walkingSpeed.toFixed(1)} m/s)
+          <strong>Walk time:</strong> ~{Math.round(transferOption.walk_time_seconds)} seconds
         </div>
         <div className="text-sm">
-          <strong>Departure from transfer:</strong>{' '}
-          {departureTime.toLocaleTimeString()}
+          <strong>Departure from transfer:</strong> {departureTime.toLocaleTimeString()}
+          {timeUntilDeparture > 0 && (
+            <span className="text-gray-500 ml-2">(in {formatCountdown(timeUntilDeparture)})</span>
+          )}
         </div>
       </div>
 
