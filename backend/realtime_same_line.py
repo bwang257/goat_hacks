@@ -53,15 +53,37 @@ class RealtimeSameLineRouter:
         if not shared_lines:
             return None
 
-        # If multiple shared lines, prefer the one that has an actual path
+        # If multiple shared lines, prefer the one with the most stations in path
+        # (avoid direct event service routes in favor of regular service)
         if len(shared_lines) > 1:
+            best_line = None
+            max_path_length = 0
+
             for line in shared_lines:
                 route_id = self.get_route_id_from_line_name(line)
-                # Check if there's a connection on this route
-                edges = self.transit_graph.adjacency.get(start_station_id, [])
-                for edge in edges:
-                    if edge.get("route_id") == route_id:
-                        return line
+                # Do a quick BFS to count path length
+                visited = set()
+                queue = [(start_station_id, 0)]
+
+                while queue and len(visited) < 50:  # Limit search
+                    curr_id, depth = queue.pop(0)
+                    if curr_id == end_station_id:
+                        if depth > max_path_length:
+                            max_path_length = depth
+                            best_line = line
+                        break
+
+                    if curr_id in visited:
+                        continue
+                    visited.add(curr_id)
+
+                    edges = self.transit_graph.adjacency.get(curr_id, [])
+                    for edge in edges:
+                        if edge.get("route_id") == route_id and edge["to"] not in visited:
+                            queue.append((edge["to"], depth + 1))
+
+            if best_line:
+                return best_line
 
         # Return the first shared line
         return list(shared_lines)[0]
