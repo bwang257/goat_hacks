@@ -321,7 +321,19 @@ class RealtimeSameLineRouter:
         """
         # BFS to find path along this route
         visited = set()
-        queue = [(start_station_id, 0, 0)]  # (station_id, time, distance)
+        queue = [(start_station_id, 0.0, 0.0)]  # (station_id, time, distance)
+        
+        # approximate speeds in m/s
+        # HR: ~32km/h = 8.9 m/s
+        # LR (Green): ~19km/h = 5.3 m/s
+        # CR: ~50km/h = 13.9 m/s
+        speed = 8.9  # Default Red/Orange/Blue
+        if "Green" in route_id:
+            speed = 5.3
+        elif "CR-" in route_id:
+            speed = 13.9
+            
+        STOP_PENALTY = 30  # seconds per stop
         
         while queue:
             curr_id, time, dist = queue.pop(0)
@@ -336,11 +348,18 @@ class RealtimeSameLineRouter:
             edges = self.transit_graph.adjacency.get(curr_id, [])
             for edge in edges:
                 if edge.get("route_id") == route_id and edge["to"] not in visited:
-                    new_time = time + edge["time_seconds"]
-                    new_dist = dist + edge.get("distance_meters", 0)
+                    edge_dist = edge.get("distance_meters", 0)
+                    
+                    # Use existing time if valid (>0), otherwise estimate
+                    edge_time = edge.get("time_seconds", 0)
+                    if edge_time <= 0 and edge_dist > 0:
+                        edge_time = (edge_dist / speed) + STOP_PENALTY
+                    
+                    new_time = time + edge_time
+                    new_dist = dist + edge_dist
                     queue.append((edge["to"], new_time, new_dist))
         
-        return (0, 0)  # No path found
+        return (0.0, 0.0)  # No path found
     
     async def get_same_line_route(
         self,
@@ -377,33 +396,96 @@ class RealtimeSameLineRouter:
             route_id
         )
         
-        # Get next trains with real-time predictions
-        next_trains_data = await self.get_next_trains_for_route(
+        # Get next trains with real-time predictions for START station
+        next_trains_start = await self.get_next_trains_for_route(
             start_station_id,
             route_id,
             direction_id,
-            limit=num_trains
+            limit=num_trains + 2  # Fetch extra to increase match chance
         )
+        
+        # Get predictions for END station to calculate actual trip time
+        next_trains_end = await self.get_next_trains_for_route(
+            end_station_id,
+            route_id,
+            direction_id,
+            limit=num_trains + 5  # Fetch more to catch the arrival
+        )
+        
+        # Create lookups for end station predictions
+        # Map trip_id -> arrival_time (at destination)
+        end_arrivals = {}
+        if next_trains_end:
+            for t in next_trains_end:
+                # We care about arrival at the destination
+                # If arrival_time is null/same as departure, use departure
+                t_arr = t.arrival_time if t.arrival_time else t.departure_time
+                if t.vehicle_id: # vehicle_id is often more reliable than trip_id for matching live updates but trip_id is standard
+                    end_arrivals[t.vehicle_id] = t_arr
+                # Also map by trip_id just in case
+                # Note: trip_id is not in RealtimeTrain dataclass currently but is in the raw API response
+                # We stored prediction_id but not trip_id explicitly in the dataclass. 
+                # Let's rely on fallback logic if vehicle matching fails or add trip_id to dataclass later.
+                # Actually, wait, RealtimeTrain doesn't have trip_id! 
+                # Checking get_next_trains_for_route implementation... 
+                # It does parse it but doesn't store it in the class.
+                # I will trust the estimated scheduled time fallback if exact matching is hard without refactoring the dataclass.
+                # BUT, I can do a time-window match -> if a train leaves Start at T, it should arrive at End at T + scheduled_time +/- variance.
+                pass
 
         # Format train information
         from datetime import timezone
         now = datetime.now(timezone.utc)
         next_trains = []
 
-        if next_trains_data:
+        if next_trains_start:
             # Use real-time predictions
-            for train in next_trains_data:
+            for train in next_trains_start[:num_trains]:
                 minutes_until = (train.departure_time - now).total_seconds() / 60
+                
+                # Try to find corresponding arrival at destination
+                # Matching logic: Find a train at destination that arrives > departure time
+                # and has same vehicle_id if available.
+                
+                real_arrival = None
+                
+                if train.vehicle_id and train.vehicle_id in end_arrivals:
+                    real_arrival = end_arrivals[train.vehicle_id]
+                else:
+                    # heuristic match: look for arrival that matches expected valid time window
+                    # Expected arrival is roughly departure + scheduled_time
+                    # We look for a train arriving within [expected - 5m, expected + 20m]
+                    expected_arr = train.departure_time + timedelta(seconds=scheduled_time)
+                    
+                    if next_trains_end:
+                        best_match = None
+                        min_diff = float('inf')
+                        
+                        for end_t in next_trains_end:
+                            end_arr = end_t.arrival_time
+                            if end_arr <= train.departure_time: continue
+                            
+                            diff = abs((end_arr - expected_arr).total_seconds())
+                            if diff < min_diff and diff < 1200: # within 20 mins of expected
+                                min_diff = diff
+                                best_match = end_arr
+                        
+                        if best_match:
+                            real_arrival = best_match
 
-                # Estimate arrival at destination
-                est_arrival = train.departure_time + timedelta(seconds=scheduled_time)
-                total_time = (est_arrival - now).total_seconds() / 60
+                if real_arrival:
+                    est_arrival = real_arrival
+                    total_time = (est_arrival - train.departure_time).total_seconds() / 60
+                else:
+                    # Fallback to estimated schedule
+                    est_arrival = train.departure_time + timedelta(seconds=scheduled_time)
+                    total_time = scheduled_time / 60
 
                 next_trains.append({
                     "departure_time": train.departure_time.isoformat(),
                     "arrival_time": est_arrival.isoformat(),
                     "minutes_until_departure": round(minutes_until, 1),
-                    "total_trip_minutes": round(total_time, 1),
+                    "total_trip_minutes": round(total_time, 0),
                     "status": train.status or "Scheduled",
                     "vehicle_id": train.vehicle_id,
                     "countdown_text": self._format_countdown(minutes_until)

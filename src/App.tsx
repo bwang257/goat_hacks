@@ -452,8 +452,12 @@ function App() {
         if (routeResponse.ok) {
           const routeData = await routeResponse.json();
 
-          // Check if this is a same-line route (single segment, train type)
-          if (routeData.segments.length === 1 && routeData.segments[0].type === 'train') {
+          // Check if this is a same-line route (all train segments are on the same line)
+          const trainSegments = routeData.segments.filter((s: any) => s.type === 'train');
+          const distinctLines = new Set(trainSegments.map((s: any) => s.line));
+          const hasTransfers = routeData.segments.some((s: any) => s.type === 'transfer');
+
+          if (trainSegments.length > 0 && distinctLines.size === 1 && !hasTransfers) {
             // Try to get same-line route details for better display
             try {
               const sameLineResponse = await fetch(

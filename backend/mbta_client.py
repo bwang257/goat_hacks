@@ -66,6 +66,7 @@ class MBTAClient:
         
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
+                # print(f"DEBUG: Fetching {url} with params {params}")
                 response = await client.get(url, params=params, headers=self.headers)
                 response.raise_for_status()
                 data = response.json()
@@ -130,9 +131,19 @@ class MBTAClient:
         if end_time is None:
             end_time = now + timedelta(hours=2)
         
-        # MBTA API expects ISO format times
-        params["filter[min_time]"] = start_time.isoformat()
-        params["filter[max_time]"] = end_time.isoformat()
+        # Convert to EST (UTC-5) for MBTA API compatibility
+        # MBTA API seems to handle -05:00 better than +00:00 for min_time
+        est_tz = timezone(timedelta(hours=-5))
+        
+        if start_time.tzinfo:
+            start_time = start_time.astimezone(est_tz)
+        
+        if end_time.tzinfo:
+            end_time = end_time.astimezone(est_tz)
+
+        # MBTA API prefers HH:MM format for schedule filtering
+        params["filter[min_time]"] = start_time.strftime("%H:%M")
+        params["filter[max_time]"] = end_time.strftime("%H:%M")
         
         params["page[limit]"] = str(limit)
         params["sort"] = "departure_time"

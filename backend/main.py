@@ -12,7 +12,7 @@ import math
 import json
 import os
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 app = FastAPI(title="MBTA Walking Time API")
 
@@ -816,24 +816,27 @@ class RouteResponse(BaseModel):
     departure_time: Optional[str] = None
     arrival_time: Optional[str] = None
 
+class RouteRequest(BaseModel):
+    station_id_1: str
+    station_id_2: str
+    prefer_fewer_transfers: bool = True
+    departure_time: Optional[str] = None
+    use_realtime: bool = True
+
 @app.post("/api/route", response_model=RouteResponse)
 async def find_route(
-    station_id_1: str,
-    station_id_2: str,
-    prefer_fewer_transfers: bool = True,
-    departure_time: Optional[str] = None,
-    use_realtime: bool = True
+    request: RouteRequest
 ):
     """
-    Find the fastest route between two stations using real-time MBTA schedules.
-    
-    Args:
-        station_id_1: Starting station ID
-        station_id_2: Ending station ID
-        prefer_fewer_transfers: Prefer routes with fewer transfers
-        departure_time: ISO format departure time (defaults to now)
-        use_realtime: Use real-time predictions if available
+    Find best route between two stations.
+    Tries time-aware routing (MBTA API) first, falls back to static graph.
     """
+    station_id_1 = request.station_id_1
+    station_id_2 = request.station_id_2
+    prefer_fewer_transfers = request.prefer_fewer_transfers
+    departure_time = request.departure_time
+    use_realtime = request.use_realtime
+    
     if not TRANSIT_GRAPH:
         raise HTTPException(
             status_code=503,
@@ -846,10 +849,12 @@ async def find_route(
         try:
             dep_time = datetime.fromisoformat(departure_time.replace('Z', '+00:00'))
         except:
-            raise HTTPException(
+             raise HTTPException(
                 status_code=400,
-                detail="Invalid departure_time format. Use ISO format (e.g., 2024-01-01T12:00:00Z)"
-            )
+                detail="Invalid timestamp format"
+             )
+    else:
+        dep_time = datetime.now(timezone.utc)
     
     # Try time-aware routing first if MBTA client is available
     mbta_client = await get_mbta_client()
@@ -857,28 +862,29 @@ async def find_route(
     
     if mbta_client and use_realtime:
         try:
-            # Use time-aware pathfinding
-            route = await TRANSIT_GRAPH.find_time_aware_path(
-                start_station_id=station_id_1,
-                end_station_id=station_id_2,
-                departure_time=dep_time,
-                mbta_client=mbta_client,
-                prefer_fewer_transfers=prefer_fewer_transfers,
-                max_transfers=3,
-                debug=False
-            )
+            # Use MultiRoutePlanner if available (handles both same-line and transfers efficiently)
+            planner = await get_multi_route_planner()
+            if planner:
+                route = await planner.find_multi_route_path(
+                    start_station_id=station_id_1,
+                    end_station_id=station_id_2,
+                    departure_time=dep_time,
+                    max_transfers=3,
+                    prefer_fewer_transfers=prefer_fewer_transfers
+                )
             
-            # If that fails, try multi-route planner
+            # Fallback to direct graph search if planner unavailable or returned nothing
+            # (Though MultiRoutePlanner should handle same-line too)
             if not route:
-                planner = await get_multi_route_planner()
-                if planner:
-                    route = await planner.find_multi_route_path(
-                        start_station_id=station_id_1,
-                        end_station_id=station_id_2,
-                        departure_time=dep_time,
-                        max_transfers=3,
-                        prefer_fewer_transfers=prefer_fewer_transfers
-                    )
+                route = await TRANSIT_GRAPH.find_time_aware_path(
+                    start_station_id=station_id_1,
+                    end_station_id=station_id_2,
+                    departure_time=dep_time,
+                    mbta_client=mbta_client,
+                    prefer_fewer_transfers=prefer_fewer_transfers,
+                    max_transfers=3,
+                    debug=False
+                )
         except Exception as e:
             print(f"Error in time-aware routing: {e}")
             # Fall back to static routing
@@ -901,9 +907,9 @@ async def find_route(
     for seg in route.segments:
         seg_response = RouteSegmentResponse(
             from_station_id=seg.from_station,
-            from_station_name=TRANSIT_GRAPH.get_station_name(seg.from_station),
+            from_station_name=TRANSIT_GRAPH.get_station_name(seg.from_station) or "Unknown Station",
             to_station_id=seg.to_station,
-            to_station_name=TRANSIT_GRAPH.get_station_name(seg.to_station),
+            to_station_name=TRANSIT_GRAPH.get_station_name(seg.to_station) or "Unknown Station",
             type=seg.type,
             line=seg.line,
             route_id=seg.route_id,
@@ -992,6 +998,12 @@ async def get_shapes():
     processed_shapes = {}
     
     for route_id, shapes_list in raw_shapes.items():
+        # Filter out Silver Line routes (tunnel/bridge routes)
+        # IDs: 741(SL1), 742(SL2), 743(SL3), 746(SL4), 749(SL5), 751(SL5)
+        # Also check for "Silver" in name if available, but ID is safer.
+        if route_id in ["741", "742", "743", "746", "749", "751"]:
+            continue
+            
         processed_shapes[route_id] = []
         for shape in shapes_list:
             if "polyline" in shape:

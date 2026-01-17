@@ -99,6 +99,13 @@ class MultiRoutePlanner:
             else:
                 continue
             
+            # Ensure departure is after requested time (API min_time can be loose)
+            if dep_time < departure_time:
+                # print(f"DEBUG: Skipping past trip {dep_time} < {departure_time}")
+                continue
+            
+            # print(f"DEBUG: Found valid trip {dep_time} >= {departure_time}")
+            
             # For now, estimate arrival based on path length
             # In full implementation, query schedule for end_station arrival
             path_length = self._estimate_path_length(start_station, end_station, route_id)
@@ -191,18 +198,37 @@ class MultiRoutePlanner:
         """
         if departure_time is None:
             departure_time = datetime.now(timezone.utc)
+            
+        # Optimization: Only try direct time-aware pathfinding if stations share a line/route
+        # Otherwise, the graph traversal with API calls (O(N) HTTP requests) is too slow
+        start_node = self.transit_graph.nodes.get(start_station_id)
+        end_node = self.transit_graph.nodes.get(end_station_id)
         
-        # First, try time-aware pathfinding from route_planner
-        # This handles same-line and simple transfers
-        route = await self.transit_graph.find_time_aware_path(
-            start_station_id=start_station_id,
-            end_station_id=end_station_id,
-            departure_time=departure_time,
-            mbta_client=self.mbta_client,
-            prefer_fewer_transfers=prefer_fewer_transfers,
-            max_transfers=max_transfers,
-            debug=False
-        )
+        has_shared_route = False
+        if start_node and end_node:
+            start_routes = set(start_node.get("lines", []))
+            end_routes = set(end_node.get("lines", []))
+            # Check for intersection
+            if start_routes & end_routes:
+                has_shared_route = True
+            # Also check route_ids directly if available
+            start_rids = set(start_node.get("route_ids", []))
+            end_rids = set(end_node.get("route_ids", []))
+            if start_rids & end_rids:
+                has_shared_route = True
+        
+        route = None
+        if has_shared_route:
+            # This handles same-line trips
+            route = await self.transit_graph.find_time_aware_path(
+                start_station_id=start_station_id,
+                end_station_id=end_station_id,
+                departure_time=departure_time,
+                mbta_client=self.mbta_client,
+                prefer_fewer_transfers=prefer_fewer_transfers,
+                max_transfers=max_transfers,
+                debug=False
+            )
         
         if route:
             return route
@@ -228,6 +254,7 @@ class MultiRoutePlanner:
             pass
         
         # Try one-transfer routes
+        # print(f"DEBUG: Trying one-transfer routes... Start: {start_routes} End: {end_routes}")
         for start_line in start_routes:
             start_route_id = self._get_route_id_from_line_name(start_line)
             
@@ -243,7 +270,10 @@ class MultiRoutePlanner:
                 )
                 
                 if not transfer_station:
+                    # print(f"DEBUG: No transfer found between {start_route_id} and {end_route_id}")
                     continue
+                
+                # print(f"DEBUG: Found transfer {transfer_station} between {start_route_id} and {end_route_id}")
                 
                 # Try to build two-segment route
                 try:
@@ -253,6 +283,7 @@ class MultiRoutePlanner:
                     )
                     
                     if not seg1:
+                        # print(f"DEBUG: Failed to find trip for leg 1: {start_station_id}->{transfer_station} on {start_route_id}")
                         continue
                     
                     # Calculate transfer arrival and minimum wait
@@ -265,7 +296,10 @@ class MultiRoutePlanner:
                     )
                     
                     if not seg2:
+                        # print(f"DEBUG: Failed to find trip for leg 2: {transfer_station}->{end_station_id} on {end_route_id}")
                         continue
+                    
+                    # print("DEBUG: Found full route!")
                     
                     # Build route segments
                     segments = []

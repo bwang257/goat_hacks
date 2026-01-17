@@ -194,19 +194,7 @@ class TransitGraph:
         debug: bool = False
     ) -> Optional[Route]:
         """
-        Find path using time-aware routing with MBTA API schedules/predictions.
-        
-        Args:
-            start_station_id: Starting station
-            end_station_id: Ending station
-            departure_time: When to start journey (defaults to now)
-            mbta_client: MBTAClient instance for API calls
-            prefer_fewer_transfers: Prefer routes with fewer transfers
-            max_transfers: Maximum number of transfers allowed
-            debug: Print debug information
-        
-        Returns:
-            Route object with actual departure/arrival times, or None if no path
+        Find path using time-aware routing, optionally prioritizing fewer transfers via multi-objective optimization.
         """
         if not mbta_client:
             raise ValueError("mbta_client is required for time-aware routing")
@@ -217,18 +205,21 @@ class TransitGraph:
         if departure_time is None:
             departure_time = datetime.now(timezone.utc)
         
-        # Time-expanded graph approach: nodes are (station_id, arrival_time)
-        # Priority queue: (arrival_time, station_id, path, num_transfers)
-        pq = [(departure_time, start_station_id, [], 0, None)]
+        # Priority Queue Item: (sort_key, current_arrival, current_station, path, num_transfers, current_line)
+        # Sort Key: (num_transfers, current_arrival) if prefer_fewer_transfers else (current_arrival, num_transfers)
+        initial_sort = (0, departure_time) if prefer_fewer_transfers else (departure_time, 0)
+        pq = [(initial_sort, departure_time, start_station_id, [], 0, None)]
         
-        # Best arrival time at each station
-        best_arrivals: Dict[str, datetime] = {start_station_id: departure_time}
+        # Pareto Optimal Labels: station_id -> List[Tuple[transfers, arrival_time]]
+        # We only keep labels that are non-dominated.
+        best_labels: Dict[str, List[Tuple[int, datetime]]] = {}
+        best_labels[start_station_id] = [(0, departure_time)]
         
         paths_explored = 0
-        MAX_EXPLORATIONS = 1000  # Limit to prevent infinite loops
+        MAX_EXPLORATIONS = 2000  # Increased limit for multi-objective search
         
         while pq and paths_explored < MAX_EXPLORATIONS:
-            current_arrival, current_station, path, num_transfers, current_line = heapq.heappop(pq)
+            _, current_arrival, current_station, path, num_transfers, current_line = heapq.heappop(pq)
             paths_explored += 1
             
             # Found destination
@@ -240,122 +231,164 @@ class TransitGraph:
                     print(f"  Transfers: {num_transfers}")
                 return self._build_route(path)
             
-            # Skip if we've found a better path to this station
-            if current_station in best_arrivals and current_arrival > best_arrivals[current_station]:
-                continue
+            # Dominance Check (Pruning)
+            # Check if this path is dominated by an existing label for this station
+            labels = best_labels.get(current_station, [])
+            # A path (t1, time1) is dominated if there exists (t2, time2) such that t2 <= t1 AND time2 <= time1
+            # (and strictly better in at least one)
+            # Note: Since we popped from PQ, we might have popped a dominated path if it was inserted before the improved path found.
+            is_dominated = False
+            for (l_transfers, l_time) in labels:
+                if l_transfers <= num_transfers and l_time <= current_arrival:
+                    if l_transfers < num_transfers or l_time < current_arrival:
+                        is_dominated = True
+                        break
+                    # If equal, we continue (it's the same state) - logic below handles updating labels
             
-            # Check transfer limit
-            if num_transfers > max_transfers:
-                continue
-            
+            # Note: For Pareto BFS, strict dominance check on POP is good, but managing the list on PUSH is cleaner.
+            # Here we assume if it was in PQ, it was valid at push time.
+            # But we can skip if we found something strictly better since then.
+            # Actually, standard Dijkstra logic is: if current_dist > best_dist[u], continue.
+            # Here: if strictly dominated, continue.
+             
             # Explore neighbors
-            for edge in self.adjacency.get(current_station, []):
+            edges = self.adjacency.get(current_station, [])
+            
+            # Heuristic: If current station serves trains, don't walk long distances
+            serves_trains = any(e.get("type") == "train" for e in edges)
+            
+            # Optimization: If we are on a line, and can stay on it, prefer that.
+            stations_reachable_by_current_line = set()
+            if current_line:
+                for edge in edges:
+                    if edge.get("type") == "train" and edge.get("line") == current_line:
+                        stations_reachable_by_current_line.add(edge["to"])
+            
+            for edge in edges:
                 next_station = edge["to"]
                 edge_type = edge.get("type", "train")
                 
-                if edge_type == "walk":
-                    # Walking edges have static time_seconds
-                    walk_time = edge.get("time_seconds", 0)
-                    if walk_time == 0:
+                # Logic to prevent hopping off train to walk to the next station
+                if current_line and edge_type == "walk":
+                    if next_station in stations_reachable_by_current_line:
                         continue
-                    
+                
+                # Logic: Don't walk long distances (>5 mins) if we can take a train from here
+                if serves_trains and edge_type == "walk":
+                    walk_time = edge.get("time_seconds", 0)
+                    if walk_time > 300: 
+                        continue
+                
+                next_arrival = current_arrival
+                new_transfers = num_transfers
+                new_line = current_line
+                edge_metadata = {}
+                
+                # --- EDGE COST CALCULATION ---
+                if edge_type == "walk":
+                    walk_time = edge.get("time_seconds", 0)
+                    if walk_time == 0: continue
                     next_arrival = current_arrival + timedelta(seconds=walk_time)
-                    
-                    # Only continue if this is better
-                    if next_station not in best_arrivals or next_arrival < best_arrivals[next_station]:
-                        best_arrivals[next_station] = next_arrival
-                        walk_edge = edge.copy()
-                        walk_edge["departure_time"] = current_arrival.isoformat()
-                        walk_edge["arrival_time"] = next_arrival.isoformat()
-                        new_path = path + [walk_edge]
-                        heapq.heappush(pq, (next_arrival, next_station, new_path, num_transfers, current_line))
+                    # Use a heuristic "virtual transfer" cost for long walks? No, keep pure.
+                    new_line = None # Walking breaks the line? Or keeps it? Usually breaks.
+                    if current_line is not None:
+                        # User said: "don't have any transfers that go from a train/subway to walking"
+                        # This implies walking counts as a transfer or break.
+                        # We resets line.
+                        pass
                 
                 elif edge_type == "train":
-                    # Train edges need MBTA API lookup
                     route_id = edge.get("route_id")
-                    if not route_id:
-                        continue
+                    if not route_id: continue
+                    edge_line = edge.get("line")
                     
-                    # Get next departures from current station on this route
-                    try:
-                        # Determine direction - simple heuristic: check if end station is reachable
-                        # For now, try both directions and pick the one that gets us closer
-                        direction_id = None  # Will try both if None
-                        
-                        departures = await mbta_client.get_next_departures(
-                            stop_id=current_station,
-                            route_id=route_id,
-                            direction_id=direction_id,
-                            limit=3,
-                            use_predictions=True
-                        )
-                        
-                        # Filter departures that are after current arrival time
-                        valid_departures = [
-                            d for d in departures
-                            if d["departure_time"] >= current_arrival
-                        ]
-                        
-                        if not valid_departures:
+                    # Check transfer
+                    is_transfer = (current_line is not None and edge_line != current_line)
+                    if is_transfer:
+                        new_transfers += 1
+                        if new_transfers > max_transfers: continue
+
+                    # SAME-LINE ZERO WAIT OPTIMIZATION
+                    if current_line and edge_line == current_line:
+                        segment_time = edge.get("time_seconds")
+                        if not segment_time:
+                            rt = edge.get("route_type", 1)
+                            segment_time = 180 if rt == 2 else (120 if rt == 1 else 150)
+                        next_arrival = current_arrival + timedelta(seconds=segment_time)
+                        edge_metadata["status"] = "On Train"
+                        new_line = edge_line
+                    
+                    else:
+                        # API Lookup
+                        try:
+                            # CR Support: Verify route_id
+                            # get_next_departures handles it.
+                            deps = await mbta_client.get_next_departures(
+                                stop_id=current_station,
+                                route_id=route_id,
+                                limit=3,
+                                use_predictions=True
+                            )
+                            valid_deps = [d for d in deps if d["departure_time"] >= current_arrival]
+                            
+                            # Transfer slack
+                            if is_transfer:
+                                min_transfer = timedelta(minutes=2)
+                                valid_deps = [d for d in valid_deps if d["departure_time"] >= current_arrival + min_transfer]
+                            
+                            if not valid_deps: continue
+                            
+                            departure = valid_deps[0]
+                            dep_time = departure["departure_time"]
+                            
+                            # Travel time
+                            segment_time = edge.get("time_seconds")
+                            if not segment_time:
+                                rt = edge.get("route_type", 1)
+                                segment_time = 180 if rt == 2 else (120 if rt == 1 else 150)
+                            
+                            next_arrival = dep_time + timedelta(seconds=segment_time)
+                            new_line = edge_line
+                            
+                            edge_metadata["departure_time"] = dep_time.isoformat()
+                            edge_metadata["status"] = departure.get("status", "Scheduled")
+                            
+                        except Exception as e:
+                            # if debug: print(f"API Error: {e}")
                             continue
-                        
-                        # Use the first valid departure
-                        departure = valid_departures[0]
-                        dep_time = departure["departure_time"]
-                        
-                        # For now, estimate travel time to next station
-                        # In a full implementation, we'd query the schedule for arrival at next_station
-                        # For simplicity, use a conservative estimate based on route type
-                        route_type = edge.get("route_type", 1)
-                        if route_type == 1:  # Heavy Rail
-                            segment_time = 120  # 2 min per segment estimate
-                        elif route_type == 0:  # Light Rail
-                            segment_time = 150  # 2.5 min per segment
-                        else:  # Commuter Rail
-                            segment_time = 180  # 3 min per segment
-                        
-                        # Calculate arrival at next station
-                        next_arrival = dep_time + timedelta(seconds=segment_time)
-                        
-                        # Check if this is a transfer
-                        is_transfer = (current_line is not None and 
-                                     edge.get("line") != current_line)
-                        
-                        # Add transfer wait time if needed
-                        if is_transfer:
-                            # Minimum transfer time: 2 minutes
-                            min_transfer_time = timedelta(minutes=2)
-                            if dep_time < current_arrival + min_transfer_time:
-                                # Need to wait for next departure
-                                if len(valid_departures) > 1:
-                                    departure = valid_departures[1]
-                                    dep_time = departure["departure_time"]
-                                    next_arrival = dep_time + timedelta(seconds=segment_time)
-                                else:
-                                    continue  # No valid transfer possible
-                        
-                        # Only continue if this is better
-                        if next_station not in best_arrivals or next_arrival < best_arrivals[next_station]:
-                            best_arrivals[next_station] = next_arrival
-                            
-                            train_edge = edge.copy()
-                            train_edge["departure_time"] = dep_time.isoformat()
-                            train_edge["arrival_time"] = next_arrival.isoformat()
-                            train_edge["time_seconds"] = segment_time
-                            train_edge["status"] = departure.get("status", "Scheduled")
-                            
-                            new_transfers = num_transfers + (1 if is_transfer else 0)
-                            new_line = edge.get("line")
-                            new_path = path + [train_edge]
-                            
-                            heapq.heappush(pq, (next_arrival, next_station, new_path, new_transfers, new_line))
+
+                # --- UPDATE PARETO SET & PQ ---
+                # Check if (new_transfers, next_arrival) is dominated by any existing label at next_station
+                labels = best_labels.get(next_station, [])
+                is_this_dominated = False
+                for (l_transfers, l_time) in labels:
+                     if l_transfers <= new_transfers and l_time <= next_arrival:
+                          is_this_dominated = True
+                          break
+                
+                if not is_this_dominated:
+                    # Remove dominated labels
+                    new_labels = [l for l in labels if not (new_transfers <= l[0] and next_arrival <= l[1])]
+                    new_labels.append((new_transfers, next_arrival))
+                    best_labels[next_station] = new_labels
                     
-                    except Exception as e:
-                        if debug:
-                            print(f"Error getting departures for {current_station} on {route_id}: {e}")
-                        continue
-        
+                    # Build path
+                    new_edge = edge.copy()
+                    new_edge["arrival_time"] = next_arrival.isoformat()
+                    if "departure_time" in edge_metadata:
+                        new_edge["departure_time"] = edge_metadata["departure_time"]
+                    else:
+                        new_edge["departure_time"] = current_arrival.isoformat()
+                    if "status" in edge_metadata:
+                        new_edge["status"] = edge_metadata["status"]
+                        
+                    new_path = path + [new_edge]
+                    
+                    # Sort Key
+                    sort_key = (new_transfers, next_arrival) if prefer_fewer_transfers else (next_arrival, new_transfers)
+                    
+                    heapq.heappush(pq, (sort_key, next_arrival, next_station, new_path, new_transfers, new_line))
+
         if debug:
             print(f"\n✗ No path found after exploring {paths_explored} possibilities")
-        
         return None
