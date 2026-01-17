@@ -9,6 +9,7 @@ echo ""
 
 # Set MBTA API Key
 export MBTA_API_KEY='4bb94e38d4f7493baff2dff87960aa39'
+export PATH="/Users/amansiddiqi/.nvm/versions/node/v24.13.0/bin:$PATH"
 
 # Start backend
 echo "Starting backend server..."

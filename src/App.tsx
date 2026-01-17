@@ -66,6 +66,7 @@ interface SameLineRouteResult {
   next_trains?: NextTrainInfo[];
   message?: string;
   path_coordinates?: StationCoordinate[];
+  geometry_coordinates?: [number, number][];
 }
 
 interface RouteSegment {
@@ -82,6 +83,7 @@ interface RouteSegment {
   departure_time?: string;
   arrival_time?: string;
   status?: string;
+  geometry_coordinates?: [number, number][];
 }
 
 interface RouteResult {
@@ -213,40 +215,13 @@ function formatDuration(minutes: number): string {
   }
 }
 
-// Map theme options
-const MAP_THEMES = {
-  standard: {
-    name: 'Standard',
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-  },
-  dark: {
-    name: 'Dark',
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-  },
-  light: {
-    name: 'Light',
-    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-  },
-  satellite: {
-    name: 'Satellite',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Tiles &copy; Esri'
-  },
-  streets: {
-    name: 'Streets',
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-  }
-};
 
-function StationSearch({ 
-  label, 
-  onSelect, 
-  selectedStation 
-}: { 
+
+function StationSearch({
+  label,
+  onSelect,
+  selectedStation
+}: {
   label: string;
   onSelect: (station: Station) => void;
   selectedStation: Station | null;
@@ -297,7 +272,7 @@ function StationSearch({
           borderRadius: '4px'
         }}
       />
-      
+
       {showResults && results.length > 0 && (
         <ul style={{
           position: 'absolute',
@@ -337,10 +312,10 @@ function StationSearch({
   );
 }
 
-function MapClickHandler({ 
+function MapClickHandler({
   onMapClick,
-  selectingStation 
-}: { 
+  selectingStation
+}: {
   onMapClick: (lat: number, lng: number) => void;
   selectingStation: 'start' | 'end' | null;
 }) {
@@ -355,15 +330,15 @@ function MapClickHandler({
 }
 
 // Component to fit map bounds to show both stations
-function MapBoundsUpdater({ 
-  startStation, 
-  endStation 
-}: { 
+function MapBoundsUpdater({
+  startStation,
+  endStation
+}: {
   startStation: Station | null;
   endStation: Station | null;
 }) {
   const map = useMap();
-  
+
   useEffect(() => {
     if (startStation && endStation) {
       const bounds = L.latLngBounds(
@@ -373,7 +348,7 @@ function MapBoundsUpdater({
       map.fitBounds(bounds, { padding: [50, 50] });
     }
   }, [startStation, endStation, map]);
-  
+
   return null;
 }
 
@@ -387,7 +362,22 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [selectingStation, setSelectingStation] = useState<'start' | 'end' | null>(null);
   const [routeGeometry, setRouteGeometry] = useState<[number, number][]>([]);
+  const [routeSegments, setRouteSegments] = useState<{ coordinates: [number, number][], color: string, opacity: number, dashArray: string | null }[]>([]);
+  const [routeShapes, setRouteShapes] = useState<{ [key: string]: { id: string; coordinates: [number, number][]; }[] }>({});
   const [walkingSpeed, setWalkingSpeed] = useState<number>(5.0); // km/h
+
+  // Helper function to get line color
+  const getLineColor = (lineName: string) => {
+    if (!lineName) return '#999999';
+    if (lineName.includes('Red')) return '#DA291C';
+    if (lineName.includes('Orange')) return '#ED8B00';
+    if (lineName.includes('Blue')) return '#003DA5';
+    // Ensure "Greenbush" does not trigger "Green" line color
+    if (lineName.includes('Green') && !lineName.includes('Greenbush')) return '#00843D';
+    if (lineName.includes('Mattapan')) return '#DA291C';
+    // Commuter Rail purple
+    return '#80276C';
+  };
 
   // Auto-calculate when both stations are selected or walking speed changes
   useEffect(() => {
@@ -404,12 +394,20 @@ function App() {
       .catch(err => console.error('Error loading stations:', err));
   }, []);
 
+  // Load route shapes on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/api/shapes`)
+      .then(res => res.json())
+      .then(data => setRouteShapes(data))
+      .catch(err => console.error('Error loading shapes:', err));
+  }, []);
+
   // Handle map click to find nearest station
   const handleMapClick = async (lat: number, lng: number) => {
     try {
       const response = await fetch(`${API_BASE}/api/stations/nearest?lat=${lat}&lng=${lng}&limit=1`);
       const nearestStations = await response.json();
-      
+
       if (nearestStations.length > 0) {
         const nearest = nearestStations[0];
         if (selectingStation === 'start') {
@@ -418,7 +416,7 @@ function App() {
           setEndStation(nearest);
         }
       }
-      
+
       setSelectingStation(null);
     } catch (err) {
       console.error('Error finding nearest station:', err);
@@ -453,7 +451,7 @@ function App() {
 
         if (routeResponse.ok) {
           const routeData = await routeResponse.json();
-          
+
           // Check if this is a same-line route (single segment, train type)
           if (routeData.segments.length === 1 && routeData.segments[0].type === 'train') {
             // Try to get same-line route details for better display
@@ -461,7 +459,7 @@ function App() {
               const sameLineResponse = await fetch(
                 `${API_BASE}/api/realtime/same-line?station_id_1=${startStation.id}&station_id_2=${endStation.id}&num_trains=3`
               );
-              
+
               if (sameLineResponse.ok) {
                 const sameLineData = await sameLineResponse.json();
                 if (sameLineData.is_same_line) {
@@ -474,37 +472,53 @@ function App() {
               // Continue with route result
             }
           }
-          
+
           // Use the comprehensive route result
           setRouteResult(routeData);
-          
-          // Build route geometry from segments
-          const allCoords: [number, number][] = [];
+          setRouteGeometry([]);
+
+          // Build route segments for display
+          const displaySegments: {
+            coordinates: [number, number][],
+            color: string,
+            opacity: number,
+            dashArray: string | null
+          }[] = [];
+
           for (const seg of routeData.segments) {
-            if (seg.type === 'walk') {
-              // For walking segments, we'd need to fetch OSRM route
-              // For now, just add start and end points
-              const fromStation = stations.find(s => s.id === seg.from_station_id);
-              const toStation = stations.find(s => s.id === seg.to_station_id);
-              if (fromStation && toStation) {
-                allCoords.push([fromStation.latitude, fromStation.longitude]);
-                allCoords.push([toStation.latitude, toStation.longitude]);
-              }
-            } else if (seg.type === 'train') {
-              // For train segments, we'd ideally get the actual route path
-              // For now, use station coordinates
-              const fromStation = stations.find(s => s.id === seg.from_station_id);
-              const toStation = stations.find(s => s.id === seg.to_station_id);
-              if (fromStation && toStation) {
-                allCoords.push([fromStation.latitude, fromStation.longitude]);
-                allCoords.push([toStation.latitude, toStation.longitude]);
+            const fromStation = stations.find(s => s.id === seg.from_station_id);
+            const toStation = stations.find(s => s.id === seg.to_station_id);
+
+            if (fromStation && toStation) {
+              const coords: [number, number][] = seg.geometry_coordinates && seg.geometry_coordinates.length > 0
+                ? seg.geometry_coordinates as [number, number][]
+                : [
+                  [fromStation.latitude, fromStation.longitude],
+                  [toStation.latitude, toStation.longitude]
+                ];
+
+              if (seg.type === 'train' && seg.line) {
+                // Train segment - uses line color
+                displaySegments.push({
+                  coordinates: coords,
+                  color: getLineColor(seg.line),
+                  opacity: 0.8,
+                  dashArray: null
+                });
+              } else {
+                // Walk or transfer - dashed blue
+                displaySegments.push({
+                  coordinates: coords,
+                  color: '#0066cc',
+                  opacity: 0.6,
+                  dashArray: '10, 10'
+                });
               }
             }
           }
-          if (allCoords.length > 0) {
-            setRouteGeometry(allCoords);
-          }
-          
+
+          setRouteSegments(displaySegments);
+
           setLoading(false);
           return;
         }
@@ -517,10 +531,10 @@ function App() {
         const sameLineResponse = await fetch(
           `${API_BASE}/api/realtime/same-line?station_id_1=${startStation.id}&station_id_2=${endStation.id}&num_trains=3`
         );
-        
+
         if (sameLineResponse.ok) {
           const sameLineData = await sameLineResponse.json();
-          
+
           if (sameLineData.is_same_line) {
             setSameLineRoute(sameLineData);
             setLoading(false);
@@ -553,7 +567,7 @@ function App() {
       const routeResponse = await fetch(
         `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${startStation.longitude},${startStation.latitude};${endStation.longitude},${endStation.latitude}?overview=full&geometries=geojson`
       );
-      
+
       if (routeResponse.ok) {
         const routeData = await routeResponse.json();
         if (routeData.routes && routeData.routes[0]) {
@@ -571,14 +585,7 @@ function App() {
     }
   };
 
-  const calculateWalkingTime = async () => {
-    if (!startStation || !endStation) {
-      alert('Please select both start and end stations');
-      return;
-    }
 
-    await calculateRoute();
-  };
 
   const clearSelection = () => {
     setStartStation(null);
@@ -587,6 +594,7 @@ function App() {
     setSameLineRoute(null);
     setRouteResult(null);
     setRouteGeometry([]);
+    setRouteSegments([]);
   };
 
   return (
@@ -600,7 +608,7 @@ function App() {
         borderRight: '1px solid #ddd'
       }}>
         <h1 style={{ marginTop: 0, fontSize: '1.5rem' }}>MBTA Route Finder</h1>
-        
+
         <p style={{ color: '#999', fontSize: '0.85rem', marginBottom: '1.5rem' }}>
           Select two stations to find the best route between them
         </p>
@@ -667,11 +675,11 @@ function App() {
             <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: `#${sameLineRoute.line_color}` }}>
               {sameLineRoute.line_name}
             </h2>
-            
+
             <div style={{ marginBottom: '0.75rem' }}>
               <strong>{sameLineRoute.from_station_name}</strong> → <strong>{sameLineRoute.to_station_name}</strong>
             </div>
-            
+
             <div style={{
               backgroundColor: '#f0f8ff',
               padding: '0.75rem',
@@ -727,11 +735,11 @@ function App() {
             <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: '#0066cc' }}>
               Trip Plan
             </h2>
-            
+
             <div style={{ marginBottom: '0.75rem' }}>
               <strong>{startStation?.name}</strong> → <strong>{endStation?.name}</strong>
             </div>
-            
+
             <div style={{
               backgroundColor: '#e7f3ff',
               padding: '0.75rem',
@@ -763,7 +771,7 @@ function App() {
                 };
                 const cleanLine = seg.line?.replace(' Line', '').trim() || '';
                 const lineColor = lineColors[cleanLine] || '#666';
-                
+
                 return (
                   <div key={idx} style={{
                     marginBottom: '0.75rem',
@@ -794,7 +802,7 @@ function App() {
                         {formatDuration(seg.time_minutes)}
                       </div>
                     </div>
-                    
+
                     <div style={{ fontSize: '0.9rem', marginBottom: '0.25rem' }}>
                       <strong>{seg.from_station_name}</strong>
                       {seg.departure_time && (
@@ -803,7 +811,7 @@ function App() {
                         </span>
                       )}
                     </div>
-                    
+
                     <div style={{ fontSize: '0.9rem' }}>
                       <strong>{seg.to_station_name}</strong>
                       {seg.arrival_time && (
@@ -812,7 +820,7 @@ function App() {
                         </span>
                       )}
                     </div>
-                    
+
                     {seg.status && seg.status !== 'Scheduled' && (
                       <div style={{
                         fontSize: '0.8rem',
@@ -838,11 +846,11 @@ function App() {
             border: '1px solid #ddd'
           }}>
             <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: '#0066cc' }}>Walking Route</h2>
-            
+
             <div style={{ marginBottom: '0.75rem' }}>
               <strong>{result.station_1.name}</strong> → <strong>{result.station_2.name}</strong>
             </div>
-            
+
             <div style={{
               backgroundColor: '#e7f3ff',
               padding: '0.75rem',
@@ -870,7 +878,7 @@ function App() {
             url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
           />
-          
+
           <MapClickHandler
             onMapClick={handleMapClick}
             selectingStation={selectingStation}
@@ -880,6 +888,24 @@ function App() {
             startStation={startStation}
             endStation={endStation}
           />
+
+          {/* Render All Route Shapes (Background) */}
+          {!result && !routeResult && !sameLineRoute && Object.entries(routeShapes).map(([routeId, shapes]) => {
+            const color = getLineColor(routeId);
+            return shapes.map(shape => (
+              <Polyline
+                key={shape.id}
+                positions={shape.coordinates}
+                pathOptions={{
+                  color: color,
+                  weight: 3,
+                  opacity: 0.5,
+                  lineCap: 'round',
+                  lineJoin: 'round'
+                }}
+              />
+            ));
+          })}
 
           {/* Show all stations with T logo markers */}
           {stations.map(station => (
@@ -946,9 +972,15 @@ function App() {
           ))}
 
           {/* Same-line route line */}
-          {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.path_coordinates && sameLineRoute.path_coordinates.length > 0 && (
+          {sameLineRoute && sameLineRoute.is_same_line && (
             <Polyline
-              positions={sameLineRoute.path_coordinates.map(coord => [coord.latitude, coord.longitude])}
+              positions={
+                sameLineRoute.geometry_coordinates && sameLineRoute.geometry_coordinates.length > 0
+                  ? sameLineRoute.geometry_coordinates
+                  : sameLineRoute.path_coordinates && sameLineRoute.path_coordinates.length > 0
+                    ? sameLineRoute.path_coordinates.map(coord => [coord.latitude, coord.longitude])
+                    : [[startStation?.latitude || 0, startStation?.longitude || 0], [endStation?.latitude || 0, endStation?.longitude || 0]]
+              }
               pathOptions={{
                 color: `#${sameLineRoute.line_color}`,
                 weight: 6,
@@ -973,6 +1005,22 @@ function App() {
               }}
             />
           )}
+
+          {/* Calculated Route Segments (Multi-colored) */}
+          {routeSegments.map((seg, idx) => (
+            <Polyline
+              key={idx}
+              positions={seg.coordinates}
+              pathOptions={{
+                color: seg.color,
+                weight: 5,
+                opacity: seg.opacity,
+                dashArray: seg.dashArray || undefined,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }}
+            />
+          ))}
 
           {/* Highlight selected start station */}
           {startStation && (

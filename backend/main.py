@@ -117,6 +117,7 @@ class SameLineRouteResponse(BaseModel):
     next_trains: List[NextTrainInfo]
     is_same_line: bool
     path_coordinates: Optional[List[StationCoordinate]] = None
+    geometry_coordinates: Optional[List[List[float]]] = None
 
 @app.get("/api/realtime/same-line")
 async def get_realtime_same_line_route(
@@ -206,6 +207,95 @@ async def get_realtime_same_line_route(
                     for coord in route.path_coordinates
                 ] if route.path_coordinates else []
 
+                # Calculate geometry shape
+                geometry = None
+                try:
+                    # Determine route ID based on base line
+                    potential_route_ids = []
+                    
+                    # Handle Green Line
+                    if "Green" in line_name or line_name in ["B", "C", "D", "E"]:
+                         potential_route_ids = ["Green-B", "Green-C", "Green-D", "Green-E"]
+                    
+                    # Handle Commuter Rail
+                    elif "Line" in line_name and "/" in line_name:
+                         # e.g. "Framingham/Worcester Line" -> try CR-Worcester, CR-Framingham
+                         # Also handle "Fall River/New Bedford Line" -> CR-NewBedford
+                         parts = line_name.replace(" Line", "").split("/")
+                         potential_route_ids = [f"CR-{p.strip().replace(' ', '')}" for p in parts]
+                         # Also try generic CR- + first word
+                         potential_route_ids.append(f"CR-{parts[-1].strip().replace(' ', '')}")
+                    elif "Line" in line_name and " " not in line_name.replace(" Line", ""):
+                         # Simple CR lines like "Lowell Line" -> CR-Lowell
+                         base = line_name.replace(" Line", "").strip()
+                         potential_route_ids.append(f"CR-{base}")
+                    else:
+                         # Handle multi-word simple lines like "Greenbush Line" or "Kingston Line" (CR-Greenbush, CR-Kingston)
+                         # Or "Fairmount Line" -> CR-Fairmount
+                         # Or complex "Fall River/New Bedford" if it didn't catch above
+                         base = line_name.replace(" Line", "").strip().replace(' ', '')
+                         potential_route_ids.append(f"CR-{base}")
+                    
+                    # Explicit Needham fix
+                    if "Needham" in line_name:
+                         potential_route_ids.append("CR-Needham")
+                    
+                    # Fallback to simple split logic
+                    base_simple = line_name.split()[0]
+                    potential_route_ids.append(base_simple)
+                    
+                    print(f"DEBUG: Looking for geometry for {station_id_1} -> {station_id_2} on {line_name}")
+                    print(f"DEBUG: Potential route IDs: {potential_route_ids}")
+
+                    target_route_id = None
+                    start_idx = None
+                    end_idx = None
+
+                    for rid in potential_route_ids:
+                         idx_map = STATION_SHAPE_INDICES.get(rid, {})
+                         start_mappings = idx_map.get(station_id_1, [])
+                         end_mappings = idx_map.get(station_id_2, [])
+                         
+                         print(f"DEBUG: Checking route {rid}")
+                         print(f"DEBUG: Start mappings: {start_mappings}")
+                         print(f"DEBUG: End mappings: {end_mappings}")
+
+                         # constant time intersection to find common shape
+                         # start_mappings is list of (shape_idx, pt_idx)
+                         
+                         for (s_shape_idx, s_pt_idx) in start_mappings:
+                             for (e_shape_idx, e_pt_idx) in end_mappings:
+                                 if s_shape_idx == e_shape_idx:
+                                     # Found a shape connecting both!
+                                     target_route_id = rid
+                                     start_idx = s_pt_idx
+                                     end_idx = e_pt_idx
+                                     found_shape_idx = s_shape_idx
+                                     break
+                             if target_route_id:
+                                 break
+                         
+                         if target_route_id:
+                             break
+                    
+                    if target_route_id:
+                         all_shapes = ROUTE_SHAPES.get(target_route_id)
+                         if all_shapes and found_shape_idx < len(all_shapes):
+                             full_shape = all_shapes[found_shape_idx]
+                             print(f"DEBUG: Found shape on {target_route_id} (idx {found_shape_idx}) with {len(full_shape)} points")
+                             if start_idx <= end_idx:
+                                 geometry = full_shape[start_idx:end_idx+1]
+                             else:
+                                 geometry = full_shape[end_idx:start_idx+1][::-1]
+                             print(f"DEBUG: Sliced geometry has {len(geometry)} points")
+                         else:
+                             print("DEBUG: Shape lookup failed despite indices found (invalid shape index)")
+                    else:
+                        print("DEBUG: No matching route shape found connecting these stations")
+
+                except Exception as e:
+                    print(f"Error calculating same-line geometry: {e}")
+
                 return SameLineRouteResponse(
                     line_name=route.line_name,
                     line_color=route.line_color,
@@ -216,7 +306,8 @@ async def get_realtime_same_line_route(
                     distance_meters=route.distance_meters,
                     next_trains=route.next_trains,
                     is_same_line=True,
-                    path_coordinates=path_coords
+                    path_coordinates=path_coords,
+                    geometry_coordinates=geometry
                 )
         except Exception as e:
             print(f"Real-time API error: {e}")
@@ -241,6 +332,74 @@ async def get_realtime_same_line_route(
         )
     ]
 
+    
+    # Calculate geometry shape for fallback
+    geometry = None
+    try:
+        # Determine route ID based on base line
+        potential_route_ids = []
+        
+        # Handle Green Line
+        if "Green" in line_name or line_name in ["B", "C", "D", "E"]:
+             potential_route_ids = ["Green-B", "Green-C", "Green-D", "Green-E"]
+        
+        # Handle Commuter Rail
+        elif "Line" in line_name and "/" in line_name:
+             # e.g. "Framingham/Worcester Line" -> try CR-Worcester, CR-Framingham
+             parts = line_name.replace(" Line", "").split("/")
+             potential_route_ids = [f"CR-{p.strip().replace(' ', '')}" for p in parts]
+             # Also try generic CR- + first word
+             potential_route_ids.append(f"CR-{parts[-1].strip().replace(' ', '')}")
+        elif "Line" in line_name and " " not in line_name.replace(" Line", ""):
+             # Simple CR lines like "Lowell Line" -> CR-Lowell
+             base = line_name.replace(" Line", "").strip()
+             potential_route_ids.append(f"CR-{base}")
+        else:
+             base = line_name.replace(" Line", "").strip().replace(' ', '')
+             potential_route_ids.append(f"CR-{base}")
+        
+        # Explicit Needham fix
+        if "Needham" in line_name:
+             potential_route_ids.append("CR-Needham")
+        
+        # Fallback to simple split logic
+        base_simple = line_name.split()[0]
+        potential_route_ids.append(base_simple)
+        
+        target_route_id = None
+        start_idx = None
+        end_idx = None
+        found_shape_idx = None
+
+        for rid in potential_route_ids:
+             idx_map = STATION_SHAPE_INDICES.get(rid, {})
+             start_mappings = idx_map.get(station_id_1, [])
+             end_mappings = idx_map.get(station_id_2, [])
+
+             for (s_shape_idx, s_pt_idx) in start_mappings:
+                 for (e_shape_idx, e_pt_idx) in end_mappings:
+                     if s_shape_idx == e_shape_idx:
+                         target_route_id = rid
+                         start_idx = s_pt_idx
+                         end_idx = e_pt_idx
+                         found_shape_idx = s_shape_idx
+                         break
+                 if target_route_id:
+                     break
+             if target_route_id:
+                 break
+        
+        if target_route_id:
+             all_shapes = ROUTE_SHAPES.get(target_route_id)
+             if all_shapes and found_shape_idx < len(all_shapes):
+                 full_shape = all_shapes[found_shape_idx]
+                 if start_idx <= end_idx:
+                     geometry = full_shape[start_idx:end_idx+1]
+                 else:
+                     geometry = full_shape[end_idx:start_idx+1][::-1]
+    except Exception as e:
+        print(f"Error calculating fallback geometry: {e}")
+
     return {
         "is_same_line": True,
         "line_name": line_name,
@@ -262,7 +421,8 @@ async def get_realtime_same_line_route(
             }
             for i in range(num_trains)
         ],
-        "path_coordinates": path_coords
+        "path_coordinates": path_coords,
+        "geometry_coordinates": geometry
     }
 
 
@@ -548,6 +708,75 @@ async def get_walking_time(request: WalkingTimeRequest):
             detail=f"Internal error: {str(e)}"
         )
 
+# Shape processing logic
+ROUTE_SHAPES = {}  # route_id -> list of (list of coordinates)
+STATION_SHAPE_INDICES = {}  # route_id -> {station_id -> list of (shape_idx, point_idx)}
+
+def get_haversine_distance(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth radius in km
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2) * math.sin(dlat/2) + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2) * math.sin(dlon/2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c * 1000  # meters
+
+@app.on_event("startup")
+async def process_route_shapes():
+    """Map stations to indices on route shapes for accurate drawing"""
+    global ROUTE_SHAPES, STATION_SHAPE_INDICES
+    
+    print("Processing route shapes...")
+    raw_shapes = MBTA_DATA.get("shapes", {})
+    stations = MBTA_DATA.get("stations", [])
+    
+    for route_id, shapes_list in raw_shapes.items():
+        # Store ALL valid shapes, not just the longest one
+        valid_shapes = []
+        
+        for shape in shapes_list:
+            if "polyline" in shape:
+                try:
+                    coords = decode_polyline(shape["polyline"])
+                    if len(coords) > 10: # Only store reasonably sized shapes
+                        valid_shapes.append(coords)
+                except:
+                    pass
+        
+        if valid_shapes:
+            ROUTE_SHAPES[route_id] = valid_shapes
+            STATION_SHAPE_INDICES[route_id] = {}
+            
+            # Find all stations on this route
+            route_stations = []
+            for s in stations:
+                if route_id in s["route_ids"]:
+                    route_stations.append(s)
+            
+            # Map each station to ALL shapes it is close to
+            for station in route_stations:
+                st_lat, st_lon = station["latitude"], station["longitude"]
+                
+                # Check against every shape
+                mappings = []
+                for shape_idx, shape_coords in enumerate(valid_shapes):
+                    min_dist = float('inf')
+                    closest_idx = -1
+                    
+                    for pt_idx, (pt_lat, pt_lon) in enumerate(shape_coords):
+                        dist = get_haversine_distance(st_lat, st_lon, pt_lat, pt_lon)
+                        if dist < min_dist:
+                            min_dist = dist
+                            closest_idx = pt_idx
+                    
+                    # Only link if reasonably close (e.g. < 2000m) 
+                    if min_dist < 2000: 
+                        mappings.append((shape_idx, closest_idx))
+                
+                if mappings:
+                    STATION_SHAPE_INDICES[route_id][station["id"]] = mappings
+
+    print(f"✓ Processed shapes for {len(ROUTE_SHAPES)} routes (multi-shape supported)")
+
 # Load transit graph on startup
 TRANSIT_GRAPH = None
 
@@ -575,6 +804,7 @@ class RouteSegmentResponse(BaseModel):
     departure_time: Optional[str] = None
     arrival_time: Optional[str] = None
     status: Optional[str] = None
+    geometry_coordinates: Optional[List[List[float]]] = None
 
 class RouteResponse(BaseModel):
     segments: List[RouteSegmentResponse]
@@ -666,9 +896,10 @@ async def find_route(
             status_code=404,
             detail=f"No route found between stations"
         )
-    
-    segments = [
-        RouteSegmentResponse(
+
+    segments = []
+    for seg in route.segments:
+        seg_response = RouteSegmentResponse(
             from_station_id=seg.from_station,
             from_station_name=TRANSIT_GRAPH.get_station_name(seg.from_station),
             to_station_id=seg.to_station,
@@ -681,10 +912,44 @@ async def find_route(
             distance_meters=seg.distance_meters,
             departure_time=seg.departure_time.isoformat() if seg.departure_time else None,
             arrival_time=seg.arrival_time.isoformat() if seg.arrival_time else None,
-            status=seg.status
+            status=seg.status,
+            geometry_coordinates=None # Initialize as None, will be filled if applicable
         )
-        for seg in route.segments
-    ]
+        
+        if seg_response.type == "train" and seg_response.route_id:
+             try:
+                 # Attempt to find geometry
+                 idx_map = STATION_SHAPE_INDICES.get(seg_response.route_id, {})
+                 start_mappings = idx_map.get(seg_response.from_station_id, [])
+                 end_mappings = idx_map.get(seg_response.to_station_id, [])
+                 
+                 target_shape = None
+                 s_idx = None
+                 e_idx = None
+                 
+                 # Find common shape
+                 for (s_shape_idx, s_pt_idx) in start_mappings:
+                     for (e_shape_idx, e_pt_idx) in end_mappings:
+                         if s_shape_idx == e_shape_idx:
+                             # Found match
+                             all_shapes = ROUTE_SHAPES.get(seg_response.route_id, [])
+                             if s_shape_idx < len(all_shapes):
+                                 target_shape = all_shapes[s_shape_idx]
+                                 s_idx = s_pt_idx
+                                 e_idx = e_pt_idx
+                             break
+                     if target_shape:
+                         break
+                         
+                 if target_shape:
+                     if s_idx <= e_idx:
+                         seg_response.geometry_coordinates = target_shape[s_idx:e_idx+1]
+                     else:
+                         seg_response.geometry_coordinates = target_shape[e_idx:s_idx+1][::-1]
+             except Exception as e:
+                 print(f"Error calculating geometry for segment: {e}")
+        
+        segments.append(seg_response)
     
     return RouteResponse(
         segments=segments,
@@ -718,6 +983,60 @@ async def find_realtime_route(
 
 
 
+@app.get("/api/shapes")
+async def get_shapes():
+    """Get all route shapes"""
+    raw_shapes = MBTA_DATA.get("shapes", {})
+    
+    # Process and decode polylines
+    processed_shapes = {}
+    
+    for route_id, shapes_list in raw_shapes.items():
+        processed_shapes[route_id] = []
+        for shape in shapes_list:
+            if "polyline" in shape:
+                try:
+                    coords = decode_polyline(shape["polyline"])
+                    processed_shapes[route_id].append({
+                        "id": shape["id"],
+                        "coordinates": coords,
+                        "name": shape.get("name"),
+                        "direction_id": shape.get("direction_id")
+                    })
+                except Exception as e:
+                    print(f"Error decoding shape {shape['id']}: {e}")
+    
+    return processed_shapes
+
+def decode_polyline(polyline_str):
+    """Decodes a Polyline string into a list of lat/lng dicts."""
+    index, lat, lng = 0, 0, 0
+    coordinates = []
+    changes = {'latitude': 0, 'longitude': 0}
+
+    while index < len(polyline_str):
+        for unit in ['latitude', 'longitude']:
+            shift, result = 0, 0
+
+            while True:
+                byte = ord(polyline_str[index]) - 63
+                index += 1
+                result |= (byte & 0x1f) << shift
+                shift += 5
+                if not byte >= 0x20:
+                    break
+
+            if (result & 1):
+                changes[unit] = ~(result >> 1)
+            else:
+                changes[unit] = (result >> 1)
+
+        lat += changes['latitude']
+        lng += changes['longitude']
+
+        coordinates.append([lat / 100000.0, lng / 100000.0])
+
+    return coordinates
 
 if __name__ == "__main__":
     import uvicorn
