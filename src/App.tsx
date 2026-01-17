@@ -128,6 +128,10 @@ function createTMarker(lines: string[]): L.DivIcon {
     'Green-C': '#00843D',
     'Green-D': '#00843D',
     'Green-E': '#00843D',
+    'B': '#00843D',
+    'C': '#00843D',
+    'D': '#00843D',
+    'E': '#00843D',
     'Silver': '#7C878E',
     'Mattapan': '#DA291C'
   };
@@ -369,6 +373,10 @@ function App() {
   // Helper function to get line color
   const getLineColor = (lineName: string) => {
     if (!lineName) return '#999999';
+
+    // Handle Green Line branches (B, C, D, E)
+    if (lineName === 'B' || lineName === 'C' || lineName === 'D' || lineName === 'E') return '#00843D';
+
     if (lineName.includes('Red')) return '#DA291C';
     if (lineName.includes('Orange')) return '#ED8B00';
     if (lineName.includes('Blue')) return '#003DA5';
@@ -691,7 +699,7 @@ function App() {
               marginBottom: '1rem'
             }}>
               <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: `#${sameLineRoute.line_color}` }}>
-                {formatDuration(sameLineRoute.scheduled_time_minutes)}
+                {formatDuration(sameLineRoute.scheduled_time_minutes || 0)}
               </div>
             </div>
 
@@ -895,11 +903,20 @@ function App() {
 
           {/* Render All Route Shapes (Background) */}
           {!result && !routeResult && !sameLineRoute && Object.entries(routeShapes).map(([routeId, shapes]) => {
+            // Skip commuter rail routes to avoid tangled lines
+            if (routeId.startsWith('CR-')) {
+              return null;
+            }
+
             const color = getLineColor(routeId);
-            return shapes.map(shape => (
+            // Only render the first shape for each route to avoid duplicates
+            const mainShape = shapes[0];
+            if (!mainShape) return null;
+
+            return (
               <Polyline
-                key={shape.id}
-                positions={shape.coordinates}
+                key={mainShape.id}
+                positions={mainShape.coordinates}
                 pathOptions={{
                   color: color,
                   weight: 3,
@@ -908,7 +925,7 @@ function App() {
                   lineJoin: 'round'
                 }}
               />
-            ));
+            );
           })}
 
           {/* Show all stations with T logo markers */}
@@ -942,6 +959,10 @@ function App() {
                         'Green-C': '#00843D',
                         'Green-D': '#00843D',
                         'Green-E': '#00843D',
+                        'B': '#00843D',
+                        'C': '#00843D',
+                        'D': '#00843D',
+                        'E': '#00843D',
                         'Silver': '#7C878E',
                         'Mattapan': '#DA291C'
                       };

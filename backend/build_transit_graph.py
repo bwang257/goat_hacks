@@ -21,30 +21,35 @@ def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> fl
     
     return R * c
 
-async def calculate_walking_time(lat1: float, lng1: float, lat2: float, lng2: float) -> Tuple[float, float]:
+async def calculate_walking_time(lat1: float, lng1: float, lat2: float, lng2: float) -> Tuple[float, float, List]:
     """
-    Calculate walking time and distance between two points using OSRM.
-    Returns (time_in_seconds, distance_in_meters)
+    Calculate walking time, distance, and geometry between two points using OSRM.
+    Returns (time_in_seconds, distance_in_meters, geometry_coordinates)
     """
-    url = f"https://routing.openstreetmap.de/routed-foot/route/v1/foot/{lng1},{lat1};{lng2},{lat2}?overview=false"
-    
+    url = f"https://routing.openstreetmap.de/routed-foot/route/v1/foot/{lng1},{lat1};{lng2},{lat2}?overview=full&geometries=geojson"
+
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
-        
+
         if data.get("code") == "Ok" and data.get("routes"):
             route = data["routes"][0]
-            return (route["duration"], route["distance"])
+            # Get geometry coordinates [lng, lat] -> convert to [lat, lng] for Leaflet
+            geom = route.get("geometry", {}).get("coordinates", [])
+            coords = [[coord[1], coord[0]] for coord in geom]  # Swap to [lat, lng]
+            return (route["duration"], route["distance"], coords)
     except:
         pass
-    
+
     # Fallback: estimate based on straight-line distance
     distance = haversine_distance(lat1, lng1, lat2, lng2)
     # Assume 5 km/h walking speed and 1.3x detour factor
     time = (distance * 1.3) / (5000 / 3600)
-    return (time, distance * 1.3)
+    # Straight line coordinates
+    coords = [[lat1, lng1], [lat2, lng2]]
+    return (time, distance * 1.3, coords)
 
 # Note: Train travel times are now calculated dynamically from MBTA API
 # schedules and predictions, not from distance estimates.
@@ -157,12 +162,12 @@ async def build_transit_graph(api_key: str = None):
             
             # Only consider stations within reasonable walking distance
             if straight_distance <= MAX_WALKING_DISTANCE:
-                # Calculate actual walking time using OSRM
-                walk_time, walk_distance = await calculate_walking_time(
+                # Calculate actual walking time using OSRM (with geometry)
+                walk_time, walk_distance, geometry = await calculate_walking_time(
                     station_a["latitude"], station_a["longitude"],
                     station_b["latitude"], station_b["longitude"]
                 )
-                
+
                 if walk_time <= MAX_WALKING_TIME:
                     # Add bidirectional walking edges
                     edge_a_to_b = {
@@ -170,14 +175,16 @@ async def build_transit_graph(api_key: str = None):
                         "to": station_b["id"],
                         "type": "walk",
                         "time_seconds": round(walk_time, 1),
-                        "distance_meters": round(walk_distance, 1)
+                        "distance_meters": round(walk_distance, 1),
+                        "geometry": geometry  # Add geometry for map display
                     }
                     edge_b_to_a = {
                         "from": station_b["id"],
                         "to": station_a["id"],
                         "type": "walk",
                         "time_seconds": round(walk_time, 1),
-                        "distance_meters": round(walk_distance, 1)
+                        "distance_meters": round(walk_distance, 1),
+                        "geometry": list(reversed(geometry))  # Reverse for opposite direction
                     }
                     graph["edges"].append(edge_a_to_b)
                     graph["edges"].append(edge_b_to_a)

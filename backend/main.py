@@ -5,6 +5,7 @@ from route_planner import TransitGraph, Route
 from realtime_same_line import RealtimeSameLineRouter
 from mbta_client import MBTAClient
 from multi_route_planner import MultiRoutePlanner
+from dijkstra_router import DijkstraRouter
 
 from typing import List
 import httpx
@@ -31,6 +32,7 @@ MBTA_DATA = {}
 REALTIME_SAME_LINE = None
 MBTA_CLIENT = None
 MULTI_ROUTE_PLANNER = None
+DIJKSTRA_ROUTER = None
 
 async def get_mbta_client():
     """Get or create MBTA client"""
@@ -782,11 +784,17 @@ TRANSIT_GRAPH = None
 
 @app.on_event("startup")
 async def load_transit_graph():
-    global TRANSIT_GRAPH
+    global TRANSIT_GRAPH, DIJKSTRA_ROUTER
     try:
         graph_file = os.path.join(os.path.dirname(__file__), "data", "mbta_transit_graph.json")
         TRANSIT_GRAPH = TransitGraph(graph_file)
         print(f"✓ Loaded transit graph with {len(TRANSIT_GRAPH.nodes)} stations")
+
+        # Initialize Dijkstra router with same graph data
+        with open(graph_file, 'r') as f:
+            graph_data = json.load(f)
+        DIJKSTRA_ROUTER = DijkstraRouter(graph_data['graph'])
+        print(f"✓ Dijkstra router initialized")
     except Exception as e:
         print(f"Warning: Could not load transit graph: {e}")
 
@@ -856,26 +864,33 @@ async def find_route(
     else:
         dep_time = datetime.now(timezone.utc)
     
-    # Try time-aware routing first if MBTA client is available
+    # Use Dijkstra-based routing (fast, accurate)
     mbta_client = await get_mbta_client()
     route = None
-    
-    if mbta_client and use_realtime:
-        try:
-            # Use MultiRoutePlanner if available (handles both same-line and transfers efficiently)
-            planner = await get_multi_route_planner()
-            if planner:
-                route = await planner.find_multi_route_path(
-                    start_station_id=station_id_1,
-                    end_station_id=station_id_2,
-                    departure_time=dep_time,
-                    max_transfers=3,
-                    prefer_fewer_transfers=prefer_fewer_transfers
-                )
-            
-            # Fallback to direct graph search if planner unavailable or returned nothing
-            # (Though MultiRoutePlanner should handle same-line too)
-            if not route:
+
+    if not DIJKSTRA_ROUTER:
+        raise HTTPException(
+            status_code=503,
+            detail="Dijkstra router not initialized. Please restart the server."
+        )
+
+    try:
+        # NEW APPROACH: Use Dijkstra router (2-phase: pathfinding + real-time)
+        route = await DIJKSTRA_ROUTER.find_route(
+            start_station_id=station_id_1,
+            end_station_id=station_id_2,
+            departure_time=dep_time,
+            mbta_client=mbta_client if use_realtime else None,
+            debug=False
+        )
+    except Exception as e:
+        print(f"Error in Dijkstra routing: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Fallback to old method
+        if mbta_client and use_realtime:
+            try:
                 route = await TRANSIT_GRAPH.find_time_aware_path(
                     start_station_id=station_id_1,
                     end_station_id=station_id_2,
@@ -885,22 +900,25 @@ async def find_route(
                     max_transfers=3,
                     debug=False
                 )
-        except Exception as e:
-            print(f"Error in time-aware routing: {e}")
-            # Fall back to static routing
+            except:
+                pass
+
+        # Final fallback to static routing
+        if not route:
+            route = TRANSIT_GRAPH.find_shortest_path(
+                station_id_1,
+                station_id_2,
+                prefer_fewer_transfers
+            )
     
-    # Fall back to static routing if time-aware failed
     if not route:
-        route = TRANSIT_GRAPH.find_shortest_path(
-            station_id_1,
-            station_id_2,
-            prefer_fewer_transfers
-        )
-    
-    if not route:
+        # Get station names for better error message
+        start_name = TRANSIT_GRAPH.get_station_name(station_id_1)
+        end_name = TRANSIT_GRAPH.get_station_name(station_id_2)
+        print(f"WARNING: No route found between {start_name} ({station_id_1}) and {end_name} ({station_id_2})")
         raise HTTPException(
             status_code=404,
-            detail=f"No route found between stations"
+            detail=f"No route found between {start_name} and {end_name}"
         )
 
     segments = []

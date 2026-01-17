@@ -28,6 +28,7 @@ def processRequest(client, from_station, to_station, walking_speed, departure_ti
         return 7
 
 # Tests
-# print(processRequest(client, "Kendall/MIT", "Mansfield", "average", "16:45"))
-# print(processRequest(client, "Kendall/MIT", "Mansfield", "fast", "16:45"))
+print(processRequest(client, "Kendall/MIT", "Mansfield", "average", "16:45"))
+print(processRequest(client, "Kendall/MIT", "Mansfield", "fast", "16:45"))
+print(processRequest(client, "Medford/Tufs", "Mansfield", "slow", "16:45"))
 

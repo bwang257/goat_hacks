@@ -183,6 +183,78 @@ class TransitGraph:
         
         return None
     
+    def _haversine_distance(self, station_id_1: str, station_id_2: str) -> float:
+        """Calculate haversine distance in meters between two stations"""
+        import math
+
+        node1 = self.nodes.get(station_id_1)
+        node2 = self.nodes.get(station_id_2)
+
+        if not node1 or not node2:
+            return 0.0
+
+        lat1, lon1 = node1["latitude"], node1["longitude"]
+        lat2, lon2 = node2["latitude"], node2["longitude"]
+
+        R = 6371000  # Earth radius in meters
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = math.radians(lat2 - lat1)
+        delta_lon = math.radians(lon2 - lon1)
+
+        a = (math.sin(delta_lat / 2) ** 2 +
+             math.cos(lat1_rad) * math.cos(lat2_rad) *
+             math.sin(delta_lon / 2) ** 2)
+        c = 2 * math.asin(math.sqrt(a))
+
+        return R * c
+
+    def _is_destination_reachable_on_line(self, current_station: str, destination: str, current_line: str) -> bool:
+        """Check if destination is reachable by staying on current line"""
+        if not current_line:
+            return False
+
+        visited = set()
+        queue = [current_station]
+
+        while queue:
+            station = queue.pop(0)
+            if station == destination:
+                return True
+
+            if station in visited:
+                continue
+            visited.add(station)
+
+            # Explore edges on same line
+            for edge in self.adjacency.get(station, []):
+                if (edge.get("type") == "train" and
+                    edge.get("line") == current_line and
+                    edge["to"] not in visited):
+                    queue.append(edge["to"])
+
+        return False
+
+    def _find_walking_edges_to_destination(self, start_station: str, end_station: str) -> Optional[Dict]:
+        """Check if there's a direct walking connection to destination"""
+        for edge in self.adjacency.get(start_station, []):
+            if edge.get("type") == "walk" and edge["to"] == end_station:
+                return edge
+        return None
+
+    def _find_nearby_stations_on_line(self, current_station: str, target_line: str, max_walk_time: float = 300) -> List[Tuple[str, Dict]]:
+        """Find stations reachable by walking that are on the target line"""
+        nearby = []
+        for edge in self.adjacency.get(current_station, []):
+            if edge.get("type") == "walk":
+                walk_time = edge.get("time_seconds", 0)
+                if walk_time <= max_walk_time:
+                    next_station = edge["to"]
+                    next_node = self.nodes.get(next_station)
+                    if next_node and target_line in next_node.get("lines", []):
+                        nearby.append((next_station, edge))
+        return nearby
+
     async def find_time_aware_path(
         self,
         start_station_id: str,
@@ -194,20 +266,61 @@ class TransitGraph:
         debug: bool = False
     ) -> Optional[Route]:
         """
-        Find path using time-aware routing, optionally prioritizing fewer transfers via multi-objective optimization.
+        Find path using time-aware routing with A* heuristic, optionally prioritizing fewer transfers via multi-objective optimization.
+        Now considers direct walking and walking to nearby stations on better lines.
         """
         if not mbta_client:
             raise ValueError("mbta_client is required for time-aware routing")
-        
+
         if start_station_id not in self.nodes or end_station_id not in self.nodes:
             return None
-        
+
         if departure_time is None:
             departure_time = datetime.now(timezone.utc)
+
+        # OPTIMIZATION 1: Check if walking directly is faster than any train route
+        direct_walk = self._find_walking_edges_to_destination(start_station_id, end_station_id)
+        if direct_walk:
+            walk_time = direct_walk.get("time_seconds", 0)
+            # If walk is under 10 minutes, just walk (faster than waiting for train + riding)
+            if walk_time < 600:
+                if debug:
+                    print(f"Direct walk available ({walk_time/60:.1f} min) - using walking route")
+                # Return a simple walking route
+                return Route(
+                    segments=[RouteSegment(
+                        from_station=start_station_id,
+                        to_station=end_station_id,
+                        type="walk",
+                        line=None,
+                        route_id=None,
+                        time_seconds=walk_time,
+                        distance_meters=direct_walk.get("distance_meters", 0),
+                        departure_time=departure_time,
+                        arrival_time=departure_time + timedelta(seconds=walk_time),
+                        status="Walking"
+                    )],
+                    total_time_seconds=walk_time,
+                    total_distance_meters=direct_walk.get("distance_meters", 0),
+                    num_transfers=0,
+                    departure_time=departure_time,
+                    arrival_time=departure_time + timedelta(seconds=walk_time)
+                )
+
+        # OPTIMIZATION 2: Check if we can walk to a station on the destination's line
+        end_node = self.nodes.get(end_station_id)
+        if end_node:
+            end_lines = end_node.get("lines", [])
+            for target_line in end_lines:
+                nearby_on_line = self._find_nearby_stations_on_line(start_station_id, target_line, max_walk_time=300)
+                if nearby_on_line:
+                    if debug:
+                        print(f"Found {len(nearby_on_line)} nearby stations on {target_line} - will consider walking to them")
         
         # Priority Queue Item: (sort_key, current_arrival, current_station, path, num_transfers, current_line)
-        # Sort Key: (num_transfers, current_arrival) if prefer_fewer_transfers else (current_arrival, num_transfers)
-        initial_sort = (0, departure_time) if prefer_fewer_transfers else (departure_time, 0)
+        # Sort Key includes A* heuristic: (num_transfers, current_arrival + heuristic) if prefer_fewer_transfers
+        initial_heuristic = self._haversine_distance(start_station_id, end_station_id) / 20.0  # ~20 m/s avg speed
+        initial_sort = (0, departure_time.timestamp() + initial_heuristic) if prefer_fewer_transfers else (departure_time.timestamp() + initial_heuristic, 0)
         pq = [(initial_sort, departure_time, start_station_id, [], 0, None)]
         
         # Pareto Optimal Labels: station_id -> List[Tuple[transfers, arrival_time]]
@@ -267,16 +380,70 @@ class TransitGraph:
             for edge in edges:
                 next_station = edge["to"]
                 edge_type = edge.get("type", "train")
-                
-                # Logic to prevent hopping off train to walk to the next station
+
+                # IMPROVED WALKING LOGIC:
+                # 1. NEVER walk if destination is reachable on current line
                 if current_line and edge_type == "walk":
+                    if self._is_destination_reachable_on_line(current_station, end_station_id, current_line):
+                        # We're on the right line to destination - don't get off to walk!
+                        continue
+                    # Also prevent walking to stations on same line (adjacent station hopping)
                     if next_station in stations_reachable_by_current_line:
                         continue
-                
-                # Logic: Don't walk long distances (>5 mins) if we can take a train from here
-                if serves_trains and edge_type == "walk":
+
+                # 2. Smart walking decisions based on context
+                if edge_type == "walk":
                     walk_time = edge.get("time_seconds", 0)
-                    if walk_time > 300: 
+                    walk_distance = edge.get("distance_meters", 0)
+
+                    # Check if walking gets us onto a better line
+                    next_node = self.nodes.get(next_station)
+                    is_walking_to_better_line = False
+
+                    if next_node and end_node:
+                        next_lines = set(next_node.get("lines", []))
+                        end_lines = set(end_node.get("lines", []))
+
+                        # Walking to a station that shares a line with destination = good!
+                        if next_lines & end_lines:
+                            is_walking_to_better_line = True
+                            if debug:
+                                shared = next_lines & end_lines
+                                print(f"Walking to {next_station} gets us on {shared} (destination's line)")
+
+                    if current_line is None:
+                        # At start: allow walks up to 5 mins, or 8 mins if it gets us on destination's line
+                        max_walk = 480 if is_walking_to_better_line else 300
+                        if walk_time > max_walk:
+                            continue
+                    else:
+                        # Already on a train
+                        if is_walking_to_better_line:
+                            # Allow longer walk if it gets us on a direct line to destination
+                            # (better than multi-transfer route)
+                            if walk_time > 420:  # 7 mins max for strategic walks
+                                continue
+                        else:
+                            # Regular transfer walk: be restrictive
+                            if serves_trains and (walk_time > 240 or walk_distance > 300):
+                                continue
+
+                # 3. Heavily discourage walking when it takes you AWAY from destination
+                # (unless it's to get on destination's line)
+                if edge_type == "walk":
+                    current_dist_to_dest = self._haversine_distance(current_station, end_station_id)
+                    next_dist_to_dest = self._haversine_distance(next_station, end_station_id)
+
+                    # Check if next station is on destination's line
+                    next_node = self.nodes.get(next_station)
+                    is_on_dest_line = False
+                    if next_node and end_node:
+                        next_lines = set(next_node.get("lines", []))
+                        end_lines = set(end_node.get("lines", []))
+                        is_on_dest_line = bool(next_lines & end_lines)
+
+                    # Skip walks moving away unless they get us on the right line
+                    if not is_on_dest_line and next_dist_to_dest > current_dist_to_dest + 200:
                         continue
                 
                 next_arrival = current_arrival
@@ -289,12 +456,22 @@ class TransitGraph:
                     walk_time = edge.get("time_seconds", 0)
                     if walk_time == 0: continue
                     next_arrival = current_arrival + timedelta(seconds=walk_time)
-                    # Use a heuristic "virtual transfer" cost for long walks? No, keep pure.
-                    new_line = None # Walking breaks the line? Or keeps it? Usually breaks.
-                    if current_line is not None:
-                        # User said: "don't have any transfers that go from a train/subway to walking"
-                        # This implies walking counts as a transfer or break.
-                        # We resets line.
+
+                    # Check if this walk gets us onto destination's line (strategic walk)
+                    next_node = self.nodes.get(next_station)
+                    is_strategic_walk = False
+                    if next_node and end_node:
+                        next_lines = set(next_node.get("lines", []))
+                        end_lines = set(end_node.get("lines", []))
+                        # Strategic walk = walk that gets us on a direct line to destination
+                        is_strategic_walk = bool(next_lines & end_lines)
+
+                    # Strategic walks don't count as transfers (they're shortcuts!)
+                    # Regular walks reset the line
+                    new_line = None
+                    if current_line is not None and not is_strategic_walk:
+                        # Non-strategic walk from a train = counts as breaking continuity
+                        # But we don't increment transfer counter here - handled by train boarding
                         pass
                 
                 elif edge_type == "train":
@@ -383,10 +560,14 @@ class TransitGraph:
                         new_edge["status"] = edge_metadata["status"]
                         
                     new_path = path + [new_edge]
-                    
-                    # Sort Key
-                    sort_key = (new_transfers, next_arrival) if prefer_fewer_transfers else (next_arrival, new_transfers)
-                    
+
+                    # A* heuristic: estimate time to destination from next_station
+                    heuristic = self._haversine_distance(next_station, end_station_id) / 20.0  # ~20 m/s avg
+                    estimated_total_time = next_arrival.timestamp() + heuristic
+
+                    # Sort Key with A* heuristic
+                    sort_key = (new_transfers, estimated_total_time) if prefer_fewer_transfers else (estimated_total_time, new_transfers)
+
                     heapq.heappush(pq, (sort_key, next_arrival, next_station, new_path, new_transfers, new_line))
 
         if debug:
