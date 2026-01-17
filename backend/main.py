@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from route_planner import TransitGraph, Route
 from realtime_same_line import RealtimeSameLineRouter
+from mbta_client import MBTAClient
+from multi_route_planner import MultiRoutePlanner
 
 from typing import List
 import httpx
@@ -10,6 +12,7 @@ import math
 import json
 import os
 from typing import List, Optional
+from datetime import datetime
 
 app = FastAPI(title="MBTA Walking Time API")
 
@@ -26,6 +29,23 @@ MBTA_DATA = {}
 
 # Initialize at startup
 REALTIME_SAME_LINE = None
+MBTA_CLIENT = None
+MULTI_ROUTE_PLANNER = None
+
+async def get_mbta_client():
+    """Get or create MBTA client"""
+    global MBTA_CLIENT
+    if MBTA_CLIENT is not None:
+        return MBTA_CLIENT
+    
+    mbta_key = os.environ.get("MBTA_API_KEY")
+    if mbta_key:
+        MBTA_CLIENT = MBTAClient(mbta_key)
+        print("✓ MBTA API client initialized")
+    else:
+        print("⚠️  MBTA_API_KEY not set - real-time features will be limited")
+    
+    return MBTA_CLIENT
 
 async def get_realtime_router():
     """Lazy load the realtime router to ensure transit graph is loaded first"""
@@ -48,10 +68,28 @@ async def get_realtime_router():
     
     return REALTIME_SAME_LINE
 
+async def get_multi_route_planner():
+    """Get or create multi-route planner"""
+    global MULTI_ROUTE_PLANNER
+    if MULTI_ROUTE_PLANNER is not None:
+        return MULTI_ROUTE_PLANNER
+    
+    mbta_client = await get_mbta_client()
+    if mbta_client and TRANSIT_GRAPH:
+        try:
+            MULTI_ROUTE_PLANNER = MultiRoutePlanner(TRANSIT_GRAPH, mbta_client)
+            print("✓ Multi-route planner initialized")
+        except Exception as e:
+            print(f"Could not initialize multi-route planner: {e}")
+    
+    return MULTI_ROUTE_PLANNER
+
 @app.on_event("startup")
 async def load_realtime_same_line():
     """Initialize realtime router at startup"""
     await get_realtime_router()
+    await get_mbta_client()
+    await get_multi_route_planner()
 
 class NextTrainInfo(BaseModel):
     departure_time: str
@@ -530,9 +568,13 @@ class RouteSegmentResponse(BaseModel):
     to_station_name: str
     type: str
     line: Optional[str]
+    route_id: Optional[str]
     time_seconds: float
     time_minutes: float
     distance_meters: float
+    departure_time: Optional[str] = None
+    arrival_time: Optional[str] = None
+    status: Optional[str] = None
 
 class RouteResponse(BaseModel):
     segments: List[RouteSegmentResponse]
@@ -541,15 +583,26 @@ class RouteResponse(BaseModel):
     total_distance_meters: float
     total_distance_km: float
     num_transfers: int
+    departure_time: Optional[str] = None
+    arrival_time: Optional[str] = None
 
 @app.post("/api/route", response_model=RouteResponse)
 async def find_route(
     station_id_1: str,
     station_id_2: str,
-    prefer_fewer_transfers: bool = True
+    prefer_fewer_transfers: bool = True,
+    departure_time: Optional[str] = None,
+    use_realtime: bool = True
 ):
     """
-    Find the fastest route between two stations using trains and walking.
+    Find the fastest route between two stations using real-time MBTA schedules.
+    
+    Args:
+        station_id_1: Starting station ID
+        station_id_2: Ending station ID
+        prefer_fewer_transfers: Prefer routes with fewer transfers
+        departure_time: ISO format departure time (defaults to now)
+        use_realtime: Use real-time predictions if available
     """
     if not TRANSIT_GRAPH:
         raise HTTPException(
@@ -557,11 +610,56 @@ async def find_route(
             detail="Transit graph not loaded. Please run build_transit_graph.py first."
         )
     
-    route = TRANSIT_GRAPH.find_shortest_path(
-        station_id_1,
-        station_id_2,
-        prefer_fewer_transfers
-    )
+    # Parse departure time
+    dep_time = None
+    if departure_time:
+        try:
+            dep_time = datetime.fromisoformat(departure_time.replace('Z', '+00:00'))
+        except:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid departure_time format. Use ISO format (e.g., 2024-01-01T12:00:00Z)"
+            )
+    
+    # Try time-aware routing first if MBTA client is available
+    mbta_client = await get_mbta_client()
+    route = None
+    
+    if mbta_client and use_realtime:
+        try:
+            # Use time-aware pathfinding
+            route = await TRANSIT_GRAPH.find_time_aware_path(
+                start_station_id=station_id_1,
+                end_station_id=station_id_2,
+                departure_time=dep_time,
+                mbta_client=mbta_client,
+                prefer_fewer_transfers=prefer_fewer_transfers,
+                max_transfers=3,
+                debug=False
+            )
+            
+            # If that fails, try multi-route planner
+            if not route:
+                planner = await get_multi_route_planner()
+                if planner:
+                    route = await planner.find_multi_route_path(
+                        start_station_id=station_id_1,
+                        end_station_id=station_id_2,
+                        departure_time=dep_time,
+                        max_transfers=3,
+                        prefer_fewer_transfers=prefer_fewer_transfers
+                    )
+        except Exception as e:
+            print(f"Error in time-aware routing: {e}")
+            # Fall back to static routing
+    
+    # Fall back to static routing if time-aware failed
+    if not route:
+        route = TRANSIT_GRAPH.find_shortest_path(
+            station_id_1,
+            station_id_2,
+            prefer_fewer_transfers
+        )
     
     if not route:
         raise HTTPException(
@@ -577,9 +675,13 @@ async def find_route(
             to_station_name=TRANSIT_GRAPH.get_station_name(seg.to_station),
             type=seg.type,
             line=seg.line,
+            route_id=seg.route_id,
             time_seconds=seg.time_seconds,
             time_minutes=round(seg.time_seconds / 60, 1),
-            distance_meters=seg.distance_meters
+            distance_meters=seg.distance_meters,
+            departure_time=seg.departure_time.isoformat() if seg.departure_time else None,
+            arrival_time=seg.arrival_time.isoformat() if seg.arrival_time else None,
+            status=seg.status
         )
         for seg in route.segments
     ]
@@ -590,7 +692,28 @@ async def find_route(
         total_time_minutes=round(route.total_time_seconds / 60, 1),
         total_distance_meters=route.total_distance_meters,
         total_distance_km=round(route.total_distance_meters / 1000, 2),
-        num_transfers=route.num_transfers
+        num_transfers=route.num_transfers,
+        departure_time=route.departure_time.isoformat() if route.departure_time else None,
+        arrival_time=route.arrival_time.isoformat() if route.arrival_time else None
+    )
+
+@app.get("/api/route/realtime", response_model=RouteResponse)
+async def find_realtime_route(
+    station_id_1: str,
+    station_id_2: str,
+    prefer_fewer_transfers: bool = True,
+    departure_time: Optional[str] = None
+):
+    """
+    Find route using real-time MBTA predictions (always uses real-time data).
+    Similar to /api/route but always uses real-time predictions.
+    """
+    return await find_route(
+        station_id_1=station_id_1,
+        station_id_2=station_id_2,
+        prefer_fewer_transfers=prefer_fewer_transfers,
+        departure_time=departure_time,
+        use_realtime=True
     )
 
 

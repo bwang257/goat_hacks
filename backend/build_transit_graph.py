@@ -46,28 +46,18 @@ async def calculate_walking_time(lat1: float, lng1: float, lat2: float, lng2: fl
     time = (distance * 1.3) / (5000 / 3600)
     return (time, distance * 1.3)
 
-async def get_train_time_between_stations(station_id_1: str, station_id_2: str, route_id: str, api_key: str) -> float:
-    """
-    Get estimated train travel time between two adjacent stations on the same line.
-    Uses MBTA predictions API if available, otherwise estimates based on distance.
-    """
-    # This would use the MBTA API to get actual travel times
-    # For now, we'll use a simplified approach
-    
-    # Typical MBTA speeds:
-    # Heavy Rail (Red/Orange/Blue): ~40 km/h average with stops
-    # Light Rail (Green): ~20 km/h average with stops
-    # Commuter Rail: ~60 km/h average with stops
-    
-    # We'll estimate based on route type
-    return 120  # Default: 2 minutes between stations (will be refined)
+# Note: Train travel times are now calculated dynamically from MBTA API
+# schedules and predictions, not from distance estimates.
 
 async def build_transit_graph(api_key: str = None):
     """
-    Build a complete transit graph with:
-    1. Train connections between adjacent stations
-    2. Walking connections between nearby stations
-    3. Transfer connections at multi-line stations
+    Build a transit connectivity graph with:
+    1. Train connections between adjacent stations (connectivity only, no time estimates)
+    2. Walking connections between nearby stations (with OSRM-calculated times)
+    3. Route and station relationships for schedule-based routing
+    
+    Note: Train travel times are now calculated dynamically from MBTA API
+    schedules and predictions, not from distance estimates.
     """
     
     print("=" * 60)
@@ -100,55 +90,44 @@ async def build_transit_graph(api_key: str = None):
             "lines": station["lines"]
         }
     
-    print("\n1. Adding train connections...")
+    print("\n1. Adding train connections (connectivity only)...")
     train_edges = 0
     
     # Add train connections (from existing connections data)
+    # These edges represent connectivity only - travel times will be
+    # calculated dynamically from MBTA API schedules/predictions
     for station in stations:
         for connection in station.get("connections", []):
             connected_station_id = connection["station_id"]
             route_id = connection["route_id"]
             line_name = connection["line"]
             
-            # Determine average speed based on route type
-            route_type = routes[route_id]["type"]
-
-            # Calculate time based on distance
-            if route_type == 1:  # Heavy Rail
-                avg_speed_kmh = 45  # Slightly faster
-                stop_time = 15      # Shorter stops
-            elif route_type == 0:  # Light Rail
-                avg_speed_kmh = 25  # Slightly faster
-                stop_time = 20      # Shorter stops
-            else:  # Commuter Rail
-                avg_speed_kmh = 60
-                stop_time = 30
-
-            travel_time = (distance / (avg_speed_kmh * 1000 / 3600)) + stop_time
-
-
-            # Calculate time based on straight-line distance
-            # (This is a simplification - real MBTA times would be better)
+            # Get route type for metadata
+            route_type = routes.get(route_id, {}).get("type", 1)
+            
+            # Calculate distance for reference (not used for time calculation)
             station_coord = (station["latitude"], station["longitude"])
             connected_coord = (graph["nodes"][connected_station_id]["latitude"],
                              graph["nodes"][connected_station_id]["longitude"])
-            
             distance = haversine_distance(*station_coord, *connected_coord)
             
-            # Add edge (directed)
+            # Add edge (directed) - NO time_seconds for train edges
+            # Time will be calculated from MBTA API schedules/predictions
             edge = {
                 "from": station["id"],
                 "to": connected_station_id,
                 "type": "train",
                 "line": line_name,
                 "route_id": route_id,
-                "time_seconds": round(travel_time, 1),
-                "distance_meters": round(distance, 1)
+                "route_type": route_type,
+                "distance_meters": round(distance, 1),
+                # Note: time_seconds will be calculated dynamically from MBTA API
             }
             graph["edges"].append(edge)
             train_edges += 1
     
-    print(f"   Added {train_edges} train connections")
+    print(f"   Added {train_edges} train connections (connectivity graph)")
+    print("   Note: Train travel times will be calculated from MBTA API schedules")
     
     # 2. Add walking connections between nearby stations
     print("\n2. Calculating walking connections between nearby stations...")
@@ -209,19 +188,16 @@ async def build_transit_graph(api_key: str = None):
     
     print(f"   Added {walking_edges} walking connections")
     
-    # 3. Add transfer penalties at multi-line stations
-    print("\n3. Adding transfer penalties...")
-    transfer_edges = 0
-    TRANSFER_TIME = 180  # 3 minutes to transfer between lines
+    # 3. Identify transfer stations (multi-line stations)
+    print("\n3. Identifying transfer stations...")
+    transfer_stations = []
     
     for station in stations:
         if len(station["lines"]) > 1:
-            # This station serves multiple lines
-            # We model this as a small time penalty when changing lines
-            # (This is implicit in our graph - staying on same line is faster)
-            pass
+            transfer_stations.append(station["id"])
     
-    print(f"   Transfer time penalty: {TRANSFER_TIME} seconds")
+    print(f"   Found {len(transfer_stations)} transfer stations")
+    print("   Note: Transfer times will be calculated from MBTA API schedules")
     
     # Save graph
     graph_data = {
@@ -231,9 +207,11 @@ async def build_transit_graph(api_key: str = None):
             "num_edges": len(graph["edges"]),
             "max_walking_distance_meters": MAX_WALKING_DISTANCE,
             "max_walking_time_seconds": MAX_WALKING_TIME,
-            "transfer_penalty_seconds": TRANSFER_TIME
+            "num_transfer_stations": len(transfer_stations),
+            "note": "Train travel times are calculated dynamically from MBTA API schedules/predictions, not from distance estimates"
         },
-        "graph": graph
+        "graph": graph,
+        "transfer_stations": transfer_stations
     }
     
     output_file = "./data/mbta_transit_graph.json"

@@ -68,6 +68,33 @@ interface SameLineRouteResult {
   path_coordinates?: StationCoordinate[];
 }
 
+interface RouteSegment {
+  from_station_id: string;
+  from_station_name: string;
+  to_station_id: string;
+  to_station_name: string;
+  type: string;
+  line?: string;
+  route_id?: string;
+  time_seconds: number;
+  time_minutes: number;
+  distance_meters: number;
+  departure_time?: string;
+  arrival_time?: string;
+  status?: string;
+}
+
+interface RouteResult {
+  segments: RouteSegment[];
+  total_time_seconds: number;
+  total_time_minutes: number;
+  total_distance_meters: number;
+  total_distance_km: number;
+  num_transfers: number;
+  departure_time?: string;
+  arrival_time?: string;
+}
+
 // Custom marker icons for selected stations
 const startIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
@@ -356,6 +383,7 @@ function App() {
   const [endStation, setEndStation] = useState<Station | null>(null);
   const [result, setResult] = useState<WalkingTimeResult | null>(null);
   const [sameLineRoute, setSameLineRoute] = useState<SameLineRouteResult | null>(null);
+  const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectingStation, setSelectingStation] = useState<'start' | 'end' | null>(null);
   const [routeGeometry, setRouteGeometry] = useState<[number, number][]>([]);
@@ -406,10 +434,85 @@ function App() {
     setLoading(true);
     setResult(null);
     setSameLineRoute(null);
+    setRouteResult(null);
     setRouteGeometry([]);
 
     try {
-      // First, check if stations are on the same line
+      // First, try to get a comprehensive route using the new API
+      try {
+        const routeResponse = await fetch(`${API_BASE}/api/route`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            station_id_1: startStation.id,
+            station_id_2: endStation.id,
+            prefer_fewer_transfers: true,
+            use_realtime: true
+          })
+        });
+
+        if (routeResponse.ok) {
+          const routeData = await routeResponse.json();
+          
+          // Check if this is a same-line route (single segment, train type)
+          if (routeData.segments.length === 1 && routeData.segments[0].type === 'train') {
+            // Try to get same-line route details for better display
+            try {
+              const sameLineResponse = await fetch(
+                `${API_BASE}/api/realtime/same-line?station_id_1=${startStation.id}&station_id_2=${endStation.id}&num_trains=3`
+              );
+              
+              if (sameLineResponse.ok) {
+                const sameLineData = await sameLineResponse.json();
+                if (sameLineData.is_same_line) {
+                  setSameLineRoute(sameLineData);
+                  setLoading(false);
+                  return;
+                }
+              }
+            } catch (err) {
+              // Continue with route result
+            }
+          }
+          
+          // Use the comprehensive route result
+          setRouteResult(routeData);
+          
+          // Build route geometry from segments
+          const allCoords: [number, number][] = [];
+          for (const seg of routeData.segments) {
+            if (seg.type === 'walk') {
+              // For walking segments, we'd need to fetch OSRM route
+              // For now, just add start and end points
+              const fromStation = stations.find(s => s.id === seg.from_station_id);
+              const toStation = stations.find(s => s.id === seg.to_station_id);
+              if (fromStation && toStation) {
+                allCoords.push([fromStation.latitude, fromStation.longitude]);
+                allCoords.push([toStation.latitude, toStation.longitude]);
+              }
+            } else if (seg.type === 'train') {
+              // For train segments, we'd ideally get the actual route path
+              // For now, use station coordinates
+              const fromStation = stations.find(s => s.id === seg.from_station_id);
+              const toStation = stations.find(s => s.id === seg.to_station_id);
+              if (fromStation && toStation) {
+                allCoords.push([fromStation.latitude, fromStation.longitude]);
+                allCoords.push([toStation.latitude, toStation.longitude]);
+              }
+            }
+          }
+          if (allCoords.length > 0) {
+            setRouteGeometry(allCoords);
+          }
+          
+          setLoading(false);
+          return;
+        }
+      } catch (err) {
+        console.log('Route API not available, trying same-line check');
+      }
+
+      // Fallback: Check if stations are on the same line
       try {
         const sameLineResponse = await fetch(
           `${API_BASE}/api/realtime/same-line?station_id_1=${startStation.id}&station_id_2=${endStation.id}&num_trains=3`
@@ -425,10 +528,10 @@ function App() {
           }
         }
       } catch (err) {
-        console.log('Same-line check not available, falling back to walking time');
+        console.log('Same-line check not available');
       }
 
-      // If not same line, calculate walking time
+      // Final fallback: calculate walking time
       const response = await fetch(`${API_BASE}/api/walking-time`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -440,7 +543,7 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to calculate walking time');
+        throw new Error('Failed to calculate route');
       }
 
       const data = await response.json();
@@ -482,6 +585,7 @@ function App() {
     setEndStation(null);
     setResult(null);
     setSameLineRoute(null);
+    setRouteResult(null);
     setRouteGeometry([]);
   };
 
@@ -611,7 +715,122 @@ function App() {
           </div>
         )}
 
-        {result && !sameLineRoute?.is_same_line && (
+        {/* Comprehensive Route Result */}
+        {routeResult && !sameLineRoute?.is_same_line && (
+          <div style={{
+            backgroundColor: 'white',
+            padding: '1rem',
+            borderRadius: '8px',
+            border: '1px solid #ddd',
+            marginBottom: '1rem'
+          }}>
+            <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: '#0066cc' }}>
+              Trip Plan
+            </h2>
+            
+            <div style={{ marginBottom: '0.75rem' }}>
+              <strong>{startStation?.name}</strong> → <strong>{endStation?.name}</strong>
+            </div>
+            
+            <div style={{
+              backgroundColor: '#e7f3ff',
+              padding: '0.75rem',
+              borderRadius: '4px',
+              marginBottom: '1rem'
+            }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0066cc' }}>
+                {formatDuration(routeResult.total_time_minutes)}
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}
+                {routeResult.departure_time && routeResult.arrival_time && (
+                  <span> • {formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
+                )}
+              </div>
+            </div>
+
+            <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+              {routeResult.segments.map((seg, idx) => {
+                const lineColors: { [key: string]: string } = {
+                  'Red': '#DA291C',
+                  'Orange': '#ED8B00',
+                  'Blue': '#003DA5',
+                  'Green': '#00843D',
+                  'B': '#00843D',
+                  'C': '#00843D',
+                  'D': '#00843D',
+                  'E': '#00843D',
+                };
+                const cleanLine = seg.line?.replace(' Line', '').trim() || '';
+                const lineColor = lineColors[cleanLine] || '#666';
+                
+                return (
+                  <div key={idx} style={{
+                    marginBottom: '0.75rem',
+                    padding: '0.75rem',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '4px',
+                    borderLeft: `4px solid ${seg.type === 'train' ? lineColor : seg.type === 'transfer' ? '#FFA500' : '#0066cc'}`
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>
+                        {seg.type === 'train' && seg.line && (
+                          <span style={{
+                            backgroundColor: lineColor,
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '3px',
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            marginRight: '6px'
+                          }}>
+                            {cleanLine}
+                          </span>
+                        )}
+                        {seg.type === 'transfer' && '🔄 Transfer'}
+                        {seg.type === 'walk' && '🚶 Walk'}
+                      </div>
+                      <div style={{ fontSize: '0.85rem', color: '#666' }}>
+                        {formatDuration(seg.time_minutes)}
+                      </div>
+                    </div>
+                    
+                    <div style={{ fontSize: '0.9rem', marginBottom: '0.25rem' }}>
+                      <strong>{seg.from_station_name}</strong>
+                      {seg.departure_time && (
+                        <span style={{ color: '#666', marginLeft: '8px', fontSize: '0.85rem' }}>
+                          {formatTime(seg.departure_time)}
+                        </span>
+                      )}
+                    </div>
+                    
+                    <div style={{ fontSize: '0.9rem' }}>
+                      <strong>{seg.to_station_name}</strong>
+                      {seg.arrival_time && (
+                        <span style={{ color: '#666', marginLeft: '8px', fontSize: '0.85rem' }}>
+                          {formatTime(seg.arrival_time)}
+                        </span>
+                      )}
+                    </div>
+                    
+                    {seg.status && seg.status !== 'Scheduled' && (
+                      <div style={{
+                        fontSize: '0.8rem',
+                        color: seg.status === 'Delayed' ? '#d32f2f' : '#666',
+                        marginTop: '0.25rem',
+                        fontStyle: 'italic'
+                      }}>
+                        {seg.status}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {result && !sameLineRoute?.is_same_line && !routeResult && (
           <div style={{
             backgroundColor: 'white',
             padding: '1rem',
