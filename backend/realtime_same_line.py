@@ -472,13 +472,43 @@ class RealtimeSameLineRouter:
         """
         Get the ordered list of stations along the route from start to end.
         Returns list of dicts with station_id, station_name, latitude, longitude.
+        Uses A* pathfinding with geographic distance heuristic to avoid branches.
         """
-        # BFS to find path along this route
+        import math
+
+        def haversine(lat1, lon1, lat2, lon2):
+            """Calculate distance between two points in km"""
+            R = 6371
+            dlat = math.radians(lat2 - lat1)
+            dlon = math.radians(lon2 - lon1)
+            a = (math.sin(dlat/2)**2 +
+                 math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+                 math.sin(dlon/2)**2)
+            c = 2 * math.asin(math.sqrt(a))
+            return R * c
+
+        end_station = self.transit_graph.nodes.get(end_station_id)
+        if not end_station:
+            return []
+
+        end_lat = end_station["latitude"]
+        end_lon = end_station["longitude"]
+
+        # A* search with distance heuristic
+        # Priority queue: (priority, path_length, current_id, path)
+        import heapq
         visited = set()
-        queue = [(start_station_id, [start_station_id])]
+        queue = []
+
+        start_station = self.transit_graph.nodes.get(start_station_id)
+        if not start_station:
+            return []
+
+        start_dist = haversine(start_station["latitude"], start_station["longitude"], end_lat, end_lon)
+        heapq.heappush(queue, (start_dist, 0, start_station_id, [start_station_id]))
 
         while queue:
-            curr_id, path = queue.pop(0)
+            _, path_len, curr_id, path = heapq.heappop(queue)
 
             if curr_id == end_station_id:
                 # Found the path! Convert to coordinates
@@ -503,6 +533,11 @@ class RealtimeSameLineRouter:
 
             for edge in edges:
                 if edge.get("route_id") == route_id and edge["to"] not in visited:
-                    queue.append((edge["to"], path + [edge["to"]]))
+                    next_station = self.transit_graph.nodes.get(edge["to"])
+                    if next_station:
+                        # Calculate heuristic: distance to end station
+                        h = haversine(next_station["latitude"], next_station["longitude"], end_lat, end_lon)
+                        priority = path_len + 1 + h  # g + h (A* formula)
+                        heapq.heappush(queue, (priority, path_len + 1, edge["to"], path + [edge["to"]]))
 
         return []  # No path found

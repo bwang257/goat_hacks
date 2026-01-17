@@ -593,11 +593,14 @@ function App() {
                       borderLeft: `3px solid #${sameLineRoute.line_color}`
                     }}
                   >
-                    <div style={{ fontWeight: 'bold', color: `#${sameLineRoute.line_color}` }}>
-                      {formatDuration(train.minutes_until_departure)} • {formatTime(train.departure_time)}
+                    <div style={{ fontWeight: 'bold', color: `#${sameLineRoute.line_color}`, fontSize: '0.95rem' }}>
+                      Departs in {train.countdown_text}
                     </div>
-                    <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                      Arrives {formatTime(train.arrival_time)}
+                    <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                      📍 Arrive at destination: {formatTime(train.arrival_time)}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#888', marginTop: '0.15rem' }}>
+                      Total trip time: {formatDuration(train.total_trip_minutes)}
                     </div>
                   </div>
                 ))
