@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import './App.css';
@@ -57,6 +57,35 @@ const endIcon = new L.Icon({
 });
 
 const API_BASE = 'http://localhost:8000';
+
+// Map theme options
+const MAP_THEMES = {
+  standard: {
+    name: 'Standard',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  },
+  dark: {
+    name: 'Dark',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  },
+  light: {
+    name: 'Light',
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  },
+  satellite: {
+    name: 'Satellite',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles &copy; Esri'
+  },
+  streets: {
+    name: 'Streets',
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  }
+};
 
 function StationSearch({ 
   label, 
@@ -170,6 +199,29 @@ function MapClickHandler({
   return null;
 }
 
+// Component to fit map bounds to show both stations
+function MapBoundsUpdater({ 
+  startStation, 
+  endStation 
+}: { 
+  startStation: Station | null;
+  endStation: Station | null;
+}) {
+  const map = useMap();
+  
+  useEffect(() => {
+    if (startStation && endStation) {
+      const bounds = L.latLngBounds(
+        [startStation.latitude, startStation.longitude],
+        [endStation.latitude, endStation.longitude]
+      );
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+  }, [startStation, endStation, map]);
+  
+  return null;
+}
+
 function App() {
   const [stations, setStations] = useState<Station[]>([]);
   const [startStation, setStartStation] = useState<Station | null>(null);
@@ -177,6 +229,8 @@ function App() {
   const [result, setResult] = useState<WalkingTimeResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectingStation, setSelectingStation] = useState<'start' | 'end' | null>(null);
+  const [routeGeometry, setRouteGeometry] = useState<[number, number][]>([]);
+  const [mapTheme, setMapTheme] = useState<keyof typeof MAP_THEMES>('standard');
 
   // Load all stations on mount
   useEffect(() => {
@@ -216,8 +270,10 @@ function App() {
 
     setLoading(true);
     setResult(null);
+    setRouteGeometry([]);
 
     try {
+      // Calculate walking time
       const response = await fetch(`${API_BASE}/api/walking-time`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -234,6 +290,22 @@ function App() {
 
       const data = await response.json();
       setResult(data);
+
+      // Fetch the actual route geometry from OSRM
+      const routeResponse = await fetch(
+        `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${startStation.longitude},${startStation.latitude};${endStation.longitude},${endStation.latitude}?overview=full&geometries=geojson`
+      );
+      
+      if (routeResponse.ok) {
+        const routeData = await routeResponse.json();
+        if (routeData.routes && routeData.routes[0]) {
+          // Convert GeoJSON coordinates [lng, lat] to Leaflet format [lat, lng]
+          const coords = routeData.routes[0].geometry.coordinates.map(
+            (coord: [number, number]) => [coord[1], coord[0]] as [number, number]
+          );
+          setRouteGeometry(coords);
+        }
+      }
     } catch (err) {
       console.error('Error calculating walking time:', err);
       alert('Error calculating walking time. Please try again.');
@@ -246,7 +318,10 @@ function App() {
     setStartStation(null);
     setEndStation(null);
     setResult(null);
+    setRouteGeometry([]);
   };
+
+  const currentTheme = MAP_THEMES[mapTheme];
 
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
@@ -263,6 +338,28 @@ function App() {
         <p style={{ color: '#666', fontSize: '0.9rem' }}>
           Search for stations or click on the map to select them.
         </p>
+
+        {/* Map Theme Selector */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Map Theme
+          </label>
+          <select
+            value={mapTheme}
+            onChange={(e) => setMapTheme(e.target.value as keyof typeof MAP_THEMES)}
+            style={{
+              width: '100%',
+              padding: '0.5rem',
+              fontSize: '1rem',
+              border: '1px solid #ccc',
+              borderRadius: '4px'
+            }}
+          >
+            {Object.entries(MAP_THEMES).map(([key, theme]) => (
+              <option key={key} value={key}>{theme.name}</option>
+            ))}
+          </select>
+        </div>
 
         {/* Start Station */}
         <StationSearch
@@ -403,13 +500,18 @@ function App() {
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url={currentTheme.url}
+            attribution={currentTheme.attribution}
           />
           
           <MapClickHandler
             onMapClick={handleMapClick}
             selectingStation={selectingStation}
+          />
+
+          <MapBoundsUpdater
+            startStation={startStation}
+            endStation={endStation}
           />
 
           {/* Show all stations */}
@@ -436,6 +538,21 @@ function App() {
               </Popup>
             </Marker>
           ))}
+
+          {/* Walking route line */}
+          {routeGeometry.length > 0 && (
+            <Polyline
+              positions={routeGeometry}
+              pathOptions={{
+                color: '#0066cc',
+                weight: 4,
+                opacity: 0.7,
+                dashArray: '10, 10',
+                lineCap: 'round',
+                lineJoin: 'round'
+              }}
+            />
+          )}
 
           {/* Highlight selected start station */}
           {startStation && (
