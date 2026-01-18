@@ -1,24 +1,41 @@
-# MBTA Real-Time Transfer Helper
+# MBTA Route Finder
 
-**Team:** Brian Wang & Aman Siddiqi
-**Event:** GoatHacks 2026
-
-An intelligent real-time transit helper for the MBTA system that helps you find the fastest way to get from station A to station B, with live train predictions and walking time calculations.
+An intelligent real-time transit routing application for the MBTA system that helps you find the fastest routes between stations with live predictions, weather-aware walking times, event alerts, and voice input.
 
 ## Features
 
-✨ **Interactive Map** - Click on any MBTA station to select start/end points
-🚇 **Real-Time Train Predictions** - See the next 3 trains with live departure/arrival times
-🚶 **Smart Route Planning** - Automatically calculates same-line routes or walking paths
-🎨 **Color-Coded Routes** - Visual paths colored by line (Red, Orange, Blue, Green, Purple for Commuter Rail)
-⚡ **Customizable Walking Speed** - Adjust walking speed (2-8 km/h) for personalized estimates
-📍 **Station-by-Station Paths** - Routes follow actual MBTA line paths, not straight lines
+### Core Routing
+- **Multi-Modal Route Planning** - Finds optimal routes using trains, walking, and transfers
+- **Real-Time Predictions** - Uses live MBTA API data for accurate departure/arrival times
+- **Multiple Route Alternatives** - Shows 3 route options with different departure times
+- **Transfer Ratings** - Color-coded badges (Likely/Risky/Unlikely) based on transfer timing
+- **Walking Time Calculations** - OSRM-based walking routes with customizable speed
+
+### Smart Features
+- **Weather-Aware Routing** - Adjusts walking times based on current weather conditions (rain, snow, temperature)
+- **Event Alerts** - Warns about Red Sox games, Bruins/Celtics games, and concerts that may cause congestion
+- **Voice Input** - Speak your route: "From Harvard to Park Street" (Web Speech API)
+- **Natural Language Queries** - Parse route queries like "Get me to Fenway from Downtown Crossing"
+
+### User Experience
+- **Interactive Map** - Full-screen Leaflet map with zoom-based station filtering
+- **Compact Search Overlay** - Lightweight search interface overlaid on map
+- **Timeline Route Display** - Detailed timeline view showing each segment with times
+- **Expandable Segments** - Click to see intermediate stops on each line
+- **Dark Theme** - Optional dark mode for low-light viewing
+- **Settings Panel** - Adjust walking speed (1-5 mph), theme preferences
+
+### Visual Features
+- **Color-Coded Lines** - Routes colored by MBTA line (Red, Orange, Blue, Green, Purple for Commuter Rail)
+- **Transfer Information** - Shows platform positions, congestion levels, and accessibility tips
+- **Walking Distance Display** - Shows walking distance in miles for walk segments
+- **Route Geometry** - Paths follow actual MBTA route shapes, not straight lines
 
 ## Quick Start
 
 ### Prerequisites
 
-- **Python 3.11 or 3.12** (recommended for best compatibility)
+- **Python 3.11 or 3.12** (recommended)
 - **Node.js 16+** and npm
 - **MBTA API Key** - Get one free at https://api-v3.mbta.com/
 
@@ -30,15 +47,8 @@ An intelligent real-time transit helper for the MBTA system that helps you find 
 2. Click "Register for an API Key"
 3. Fill out the form (it's free!)
 4. Check your email for the API key
-5. Save it - you'll need it in the next steps
 
-#### 2. Clone and Navigate to Project
-
-```bash
-cd goat_hacks
-```
-
-#### 3. Download MBTA Station Data
+#### 2. Download MBTA Station Data
 
 This step downloads all MBTA station data and creates the transit graph. **You only need to do this once.**
 
@@ -50,9 +60,9 @@ export MBTA_API_KEY='your_api_key_here'
 python3 download_mbta_data.py
 ```
 
-This will create `data/mbta_stations.json` with all station information.
+This creates `backend/data/mbta_stations.json` with all station information.
 
-#### 4. Build Transit Graph (Optional but Recommended)
+#### 3. Build Transit Graph
 
 This creates walking connections between nearby stations:
 
@@ -61,9 +71,9 @@ cd backend
 python3 build_transit_graph.py
 ```
 
-This will create `data/mbta_transit_graph.json`. **This step can take 5-10 minutes** as it calculates walking routes between all nearby station pairs.
+This creates `backend/data/mbta_transit_graph.json`. **This step can take 5-10 minutes** as it calculates walking routes between all nearby station pairs.
 
-#### 5. Set Up Backend
+#### 4. Set Up Backend
 
 ```bash
 cd backend
@@ -79,27 +89,23 @@ pip install --upgrade pip wheel
 pip install -r requirements.txt
 ```
 
-**Troubleshooting:** If you get build errors with `pydantic-core`:
-- Use Python 3.11 or 3.12 (recommended), OR
-- Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-
-#### 6. Set Up Frontend
+#### 5. Set Up Frontend
 
 ```bash
 # From project root
 npm install
 ```
 
-#### 7. Start the Application
+#### 6. Start the Application
 
-**Option A: Use the startup script (easiest)**
+**Option A: Use the startup script (recommended)**
 
 ```bash
 # From project root
 ./start.sh
 ```
 
-This will start both backend and frontend automatically with your API key.
+This starts both backend and frontend automatically with your API key.
 
 **Option B: Manual start (two terminals)**
 
@@ -117,7 +123,7 @@ Terminal 2 - Frontend:
 npm run dev
 ```
 
-#### 8. Open the Application
+#### 7. Open the Application
 
 Visit **http://localhost:5173** (or the URL shown by Vite) in your browser.
 
@@ -134,29 +140,34 @@ Visit **http://localhost:5173** (or the URL shown by Vite) in your browser.
 - Type station names in the search boxes
 - Select from the dropdown
 
+**Method 3: Voice Input** (Chrome/Edge)
+- Click the microphone button in the search overlay
+- Speak: "From Harvard to Park Street" or "Get me to Fenway from Downtown Crossing"
+- The app will automatically parse and select stations
+
 ### Understanding Results
 
-**Same-Line Routes** (e.g., Harvard → Park Street on Red Line):
-- Shows colored line following actual MBTA route
-- Displays next 3 trains with:
-  - Departure countdown ("Arriving", "5 min", etc.)
-  - Destination arrival time
-  - Total trip time
-- Route path shows all intermediate stations
+**Route Cards** show:
+- **Rating Badge** - Likely (green), Risky (orange), or Unlikely (red) based on transfer timing
+- **Total Time** - Time from now to arrival
+- **Departure/Arrival Times** - When to leave and when you'll arrive
+- **Transfer Count** - Number of transfers required
 
-**Different-Line Routes** (e.g., Harvard → Lechmere):
-- Shows walking path with blue dashed line
-- Displays walking time based on your selected speed
-- Adjust walking speed with slider (2-8 km/h)
+**Timeline Display** (click to expand):
+- Time-anchored segments showing each part of the journey
+- Train segments show line, number of stops, and duration
+- Walk segments show distance in miles
+- Transfer segments show platform info and tips
 
-### Walking Speed Adjustment
+**Warning Banners** appear at the top for:
+- **Event Alerts** - Major events (games, concerts) affecting stations
+- **Weather Advisories** - Weather conditions affecting walking times
 
-Use the slider in the sidebar to set your walking pace:
-- **2 km/h** - Slow/leisurely walk
-- **5 km/h** - Average walking speed (default)
-- **8 km/h** - Fast walk/light jog
+### Settings
 
-Routes automatically recalculate when you change the speed.
+Click the settings icon to adjust:
+- **Walking Speed** - 1-5 mph (affects walking time calculations)
+- **Theme** - Light or Dark mode
 
 ## Project Structure
 
@@ -164,42 +175,51 @@ Routes automatically recalculate when you change the speed.
 goat_hacks/
 ├── backend/
 │   ├── data/
-│   │   ├── mbta_stations.json       # Station data (generated)
-│   │   └── mbta_transit_graph.json  # Transit graph (generated)
-│   ├── main.py                       # FastAPI server
-│   ├── realtime_same_line.py         # Real-time predictions
-│   ├── build_transit_graph.py        # Graph builder
-│   ├── route_planner.py              # Route planning algorithms
-│   ├── requirements.txt              # Python dependencies
-│   └── venv/                         # Virtual environment
+│   │   ├── mbta_stations.json          # Station data (generated)
+│   │   ├── mbta_transit_graph.json     # Transit graph (generated)
+│   │   └── transfer_station_data.json  # Transfer station metadata
+│   ├── main.py                          # FastAPI server
+│   ├── dijkstra_router.py               # Main routing algorithm
+│   ├── route_planner.py                 # Time-aware pathfinding
+│   ├── mbta_client.py                   # MBTA API client with caching
+│   ├── weather_service.py               # Weather API integration
+│   ├── event_service.py                 # Event detection (games, concerts)
+│   ├── requirements.txt                 # Python dependencies
+│   └── venv/                            # Virtual environment
 ├── src/
-│   ├── App.tsx                       # Main React component
-│   ├── App.css                       # Styles
-│   ├── main.tsx                      # React entry point
-│   └── index.css                     # Global styles
-├── download_mbta_data.py             # Data downloader
-├── start.sh                          # Startup script
-├── package.json                      # Node dependencies
+│   ├── App.tsx                          # Main React component
+│   ├── App.css                          # Styles
+│   ├── main.tsx                         # React entry point
+│   └── index.css                        # Global styles
+├── download_mbta_data.py                # Data downloader
+├── start.sh                             # Startup script
+├── package.json                         # Node dependencies
 └── README.md
 ```
 
 ## API Endpoints
 
-The backend provides the following endpoints:
+### Core Routing
+- `POST /api/route` - Find optimal route between two stations
+- `POST /api/route/alternatives` - Get additional route alternatives
+- `POST /api/parse-route-query` - Parse natural language route queries
 
-- `GET /` - API info and status
+### Data
 - `GET /api/stations` - Get all MBTA stations
 - `GET /api/stations/search?query=...` - Search stations by name
-- `GET /api/realtime/same-line?station_id_1=...&station_id_2=...` - Get real-time route between two stations
+- `GET /api/routes` - Get all MBTA routes/lines
+- `GET /api/transfer-station-data` - Get transfer station metadata
+
+### Utilities
 - `POST /api/walking-time` - Calculate walking time between stations
 
 ## Technologies Used
 
 ### Frontend
 - **React** + **TypeScript** - UI framework
-- **Leaflet** - Interactive maps
-- **React-Leaflet** - React bindings for Leaflet
+- **Leaflet** + **React-Leaflet** - Interactive maps
 - **Vite** - Build tool and dev server
+- **Web Speech API** - Voice input support
 
 ### Backend
 - **FastAPI** - Modern Python web framework
@@ -207,33 +227,32 @@ The backend provides the following endpoints:
 - **httpx** - Async HTTP client for MBTA API
 - **pydantic** - Data validation
 
-### APIs
-- **MBTA V3 API** - Real-time train predictions and station data
+### External APIs
+- **MBTA V3 API** - Real-time train predictions, schedules, and station data
+- **Weather.gov API** - Weather conditions (no key required)
 - **OSRM** - Walking route calculations
+- **OpenStreetMap** - Map tiles
 
-## Features in Detail
+## Advanced Features
 
-### Real-Time Predictions
-- Fetches live train data from MBTA API
-- Shows next 3 upcoming trains for same-line routes
-- Displays departure and arrival times
-- Falls back to estimated schedules when real-time data unavailable
-- Smart intervals: 6 min for subway, 30 min for commuter rail
+### Weather-Aware Routing
+The app automatically adjusts walking times based on current weather:
+- Heavy rain/snow: +20% walking time
+- Light rain/snow: +10% walking time
+- Extreme cold (<20°F) or heat (>90°F): +5% walking time
 
-### Smart Route Selection
-- Prefers main-line routes over event service routes
-- Uses A* pathfinding to avoid unnecessary branches
-- Follows actual station-by-station paths
-- Supports all MBTA lines:
-  - Heavy Rail: Red, Orange, Blue
-  - Light Rail: Green (B, C, D, E branches)
-  - Commuter Rail: 13 lines (Providence, Worcester, Franklin, etc.)
+### Event Awareness
+Detects major Boston events that may cause congestion:
+- **Fenway Park** - Red Sox games → affects Kenmore station
+- **TD Garden** - Bruins, Celtics games, concerts → affects North Station
+- Shows warnings within 3 hours before/after event time
 
-### Visual Map Display
-- Custom T logo markers color-coded by line
-- Polylines follow actual route paths
-- Line colors match official MBTA colors
-- Smooth station-to-station rendering
+### Routing Algorithm
+Uses a two-phase approach:
+1. **Dijkstra's Algorithm** - Fast pathfinding on static graph
+2. **Real-Time Enrichment** - Fills in actual departure/arrival times from MBTA API
+
+This ensures fast response times while maintaining accuracy with live data.
 
 ## Troubleshooting
 
@@ -249,29 +268,38 @@ lsof -ti:8000 | xargs kill -9
 **"File not found: data/mbta_stations.json"**
 - Run the data downloader: `python3 download_mbta_data.py`
 
-**No trains showing up**
+**No routes showing up**
 - Check that your MBTA API key is set: `echo $MBTA_API_KEY`
 - Some routes may not have real-time data (especially weekends)
-- Look for "Estimated" status in train listings
+- Make sure you've built the transit graph: `cd backend && python3 build_transit_graph.py`
 
-**Walking routes not showing**
-- Make sure you've run `build_transit_graph.py`
-- Check that backend is running on port 8000
+**Voice input not working**
+- Voice input requires Chrome, Edge, or Safari
+- Check browser permissions for microphone access
+- HTTPS may be required (use `npm run dev -- --https` for local testing)
 
-## Development Notes
+**Weather/Event data not showing**
+- Weather service uses Weather.gov (no key required, but may fail if offline)
+- Event detection uses hardcoded game dates (will be expanded with API integration)
 
-### Adding New Features
+## Development
 
-The codebase is structured for easy extension:
+### Running Tests
 
-- **Add new API endpoints**: Edit `backend/main.py`
-- **Modify route calculation**: Edit `backend/realtime_same_line.py`
-- **Update UI components**: Edit `src/App.tsx`
-- **Adjust map styling**: Edit `src/App.css`
+```bash
+cd backend
+source venv/bin/activate
 
-### Data Updates
+# Test weather adjustments
+python3 test_weather_adjustment.py
 
-To refresh MBTA station data (e.g., when new stations open):
+# Test event detection
+python3 test_event_service.py
+```
+
+### Updating Data
+
+To refresh MBTA station data:
 
 ```bash
 export MBTA_API_KEY='your_key'
@@ -282,17 +310,14 @@ python3 build_transit_graph.py
 
 ## Credits
 
-Built with ❤️ by Brian Wang and Aman Siddiqi for GoatHacks 2026
+Built for GoatHacks 2026
 
 ### Acknowledgments
 - MBTA for their excellent V3 API
 - OpenStreetMap and OSRM for walking route data
+- Weather.gov for free weather API
 - Leaflet for the mapping library
 
 ## License
 
 MIT License - feel free to use and modify!
-
----
-
-**Need help?** Open an issue or reach out to the team!
