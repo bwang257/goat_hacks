@@ -214,7 +214,19 @@ class DijkstraRouter:
                 static_travel_time = edge.get("time_seconds", 120)  # Default 2 min
 
                 # Check if this is a transfer
-                is_transfer = (current_line is not None and line_name != current_line)
+                # Note: Green Line branches (B, C, D, E) are NOT considered transfers
+                def is_same_line_family(line1, line2):
+                    """Check if two lines are in the same family (e.g., Green Line branches)"""
+                    if line1 is None or line2 is None:
+                        return False
+                    # Green Line branches
+                    green_branches = {'B', 'C', 'D', 'E', 'Green-B', 'Green-C', 'Green-D', 'Green-E'}
+                    if line1 in green_branches and line2 in green_branches:
+                        return True
+                    # Otherwise, must match exactly
+                    return line1 == line2
+
+                is_transfer = (current_line is not None and not is_same_line_family(line_name, current_line))
                 transfer_buffer_seconds = 0
                 if is_transfer:
                     num_transfers += 1

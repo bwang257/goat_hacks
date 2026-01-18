@@ -118,6 +118,28 @@ interface GroupedSegment {
   intermediateStops?: string[];
 }
 
+// Helper function to normalize line names for grouping
+// Green Line branches (B, C, D, E) should be treated as the same line
+function normalizeLineName(line: string | undefined): string {
+  if (!line) return '';
+
+  // Green Line branches should all be treated as "Green"
+  if (line === 'B' || line === 'C' || line === 'D' || line === 'E' ||
+      line === 'Green-B' || line === 'Green-C' || line === 'Green-D' || line === 'Green-E') {
+    return 'Green';
+  }
+
+  // Remove " Line" suffix for consistency
+  return line.replace(' Line', '').trim();
+}
+
+// Helper function to check if two line names are compatible for grouping
+function areLinesCompatible(line1: string | undefined, line2: string | undefined): boolean {
+  const normalized1 = normalizeLineName(line1);
+  const normalized2 = normalizeLineName(line2);
+  return normalized1 === normalized2;
+}
+
 // Helper function to group consecutive segments on the same line
 function groupSegmentsByLine(segments: RouteSegment[]): GroupedSegment[] {
   const grouped: GroupedSegment[] = [];
@@ -129,10 +151,10 @@ function groupSegmentsByLine(segments: RouteSegment[]): GroupedSegment[] {
       // Check if we can merge with the previous group
       const lastGroup = grouped[grouped.length - 1];
 
+      // Merge if same line (treating Green Line branches as one line)
       if (lastGroup &&
           lastGroup.type === 'train' &&
-          lastGroup.line === seg.line &&
-          lastGroup.route_id === seg.route_id) {
+          areLinesCompatible(lastGroup.line, seg.line)) {
         // Merge with previous group
         lastGroup.segments.push(seg);
         lastGroup.toStation = seg.to_station_name;
@@ -142,11 +164,16 @@ function groupSegmentsByLine(segments: RouteSegment[]): GroupedSegment[] {
           lastGroup.intermediateStops = [];
         }
         lastGroup.intermediateStops.push(seg.from_station_name);
+
+        // Update route_id if we're on Green Line to show branch info
+        if (normalizeLineName(seg.line) === 'Green') {
+          lastGroup.route_id = lastGroup.route_id + '→' + seg.route_id;
+        }
       } else {
-        // Create new group
+        // Create new group with normalized line name
         grouped.push({
           type: 'train',
-          line: seg.line,
+          line: normalizeLineName(seg.line) || seg.line,
           route_id: seg.route_id,
           segments: [seg],
           fromStation: seg.from_station_name,
@@ -158,6 +185,17 @@ function groupSegmentsByLine(segments: RouteSegment[]): GroupedSegment[] {
         });
       }
     } else if (seg.type === 'transfer') {
+      // Don't show as transfer if it's just a Green Line branch change at the same station
+      const lastGroup = grouped[grouped.length - 1];
+      if (lastGroup && lastGroup.type === 'train' &&
+          normalizeLineName(lastGroup.line) === 'Green' &&
+          i + 1 < segments.length && segments[i + 1].type === 'train' &&
+          normalizeLineName(segments[i + 1].line) === 'Green' &&
+          seg.from_station_name === seg.to_station_name) {
+        // Skip this transfer - it's just a Green Line branch change
+        continue;
+      }
+
       // Transfers get their own group
       grouped.push({
         type: 'transfer',
