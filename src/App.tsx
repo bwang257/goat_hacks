@@ -1019,63 +1019,198 @@ function App() {
 
         {/* Results Container */}
         <div className="results-container">
-          {/* Same-line route result */}
-          {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (
-            <div className="result-card same-line-route" style={{
-              borderColor: `#${sameLineRoute.line_color}`
-            }}>
-              <h2 className="result-card-title" style={{
-                color: `#${sameLineRoute.line_color}`
-              }}>
-              {sameLineRoute.line_name}
-            </h2>
-            
-              <p className="result-card-subtitle">
-              <strong>{sameLineRoute.from_station_name}</strong> → <strong>{sameLineRoute.to_station_name}</strong>
-              </p>
+          {/* Same-line route result - Convert to RouteResult format */}
+          {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (() => {
+            // Convert next_trains to RouteResult format
+            const sameLineRoutes: RouteResult[] = (sameLineRoute.next_trains || []).slice(0, 3).map((train) => {
+              // Create a single train segment
+              const segment: RouteSegment = {
+                from_station_id: startStation?.id || '',
+                from_station_name: sameLineRoute.from_station_name || startStation?.name || '',
+                to_station_id: endStation?.id || '',
+                to_station_name: sameLineRoute.to_station_name || endStation?.name || '',
+                type: 'train',
+                line: sameLineRoute.line_name,
+                route_id: '',
+                time_seconds: (train.total_trip_minutes || 0) * 60,
+                time_minutes: train.total_trip_minutes || 0,
+                distance_meters: sameLineRoute.distance_meters || 0,
+                departure_time: train.departure_time,
+                arrival_time: train.arrival_time,
+                status: train.status || 'Scheduled'
+              };
 
-              <div className="time-display" style={{
-                backgroundColor: `rgba(${parseInt(sameLineRoute.line_color.slice(0, 2), 16)}, ${parseInt(sameLineRoute.line_color.slice(2, 4), 16)}, ${parseInt(sameLineRoute.line_color.slice(4, 6), 16)}, 0.08)`,
-                borderColor: `#${sameLineRoute.line_color}`
-              }}>
-                <div className="time-value" style={{
-                  color: `#${sameLineRoute.line_color}`
-                }}>
-                  {formatDuration(sameLineRoute.scheduled_time_minutes || 0)}
+              return {
+                segments: [segment],
+                total_time_seconds: (train.total_trip_minutes || 0) * 60,
+                total_time_minutes: train.total_trip_minutes || 0,
+                total_distance_meters: sameLineRoute.distance_meters || 0,
+                total_distance_km: (sameLineRoute.distance_meters || 0) / 1000,
+                num_transfers: 0,
+                departure_time: train.departure_time,
+                arrival_time: train.arrival_time,
+                has_risky_transfers: false,
+                alternatives: []
+              };
+            });
+
+            const primaryRoute = sameLineRoutes[0];
+            const alternativeRoutes = sameLineRoutes.slice(1, 3);
+
+            return (
+              <>
+                {/* Primary Same-Line Route Card */}
+                {primaryRoute && (
+                  <div 
+                    className="result-card route-option-card" 
+                    role="region" 
+                    aria-label="Primary same-line route option"
+                    onClick={() => {
+                      const newExpanded = new Set(expandedRoutes);
+                      if (newExpanded.has(0)) {
+                        newExpanded.delete(0);
+                      } else {
+                        newExpanded.add(0);
+                      }
+                      setExpandedRoutes(newExpanded);
+                    }}
+          style={{
+            cursor: 'pointer',
+                      border: `2px solid ${getRatingBorderColor(primaryRoute.segments, false)}`
+                    }}
+                  >
+                    <div className="route-option-header">
+                      <div className="route-option-title">
+                        <div>
+                          <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                            LIKELY
+                          </span>
+                          <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                            No transfers required - direct route
+                          </div>
+                        </div>
+                      </div>
+                      <div className="route-option-time">
+                        {formatDuration(primaryRoute.total_time_minutes)}
+                      </div>
+                    </div>
+
+                    <div className="route-option-meta">
+                      {primaryRoute.departure_time && primaryRoute.arrival_time && (
+                        <span>{formatTime(primaryRoute.departure_time)} - {formatTime(primaryRoute.arrival_time)}</span>
+                      )}
+                      <span> • {primaryRoute.num_transfers} {primaryRoute.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
+                    </div>
+
+                    {expandedRoutes.has(0) && (
+                      <div 
+                        className="grouped-segments-list" 
+                        role="list" 
+                        aria-label="Route segments"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {groupSegmentsByLine(primaryRoute.segments).map((group, idx) => (
+                          <GroupedSegmentDisplay
+                            key={idx}
+                            group={group}
+                            isExpanded={expandedGroups.has(idx)}
+                            onToggle={() => {
+                              const newExpanded = new Set(expandedGroups);
+                              if (newExpanded.has(idx)) {
+                                newExpanded.delete(idx);
+                              } else {
+                                newExpanded.add(idx);
+                              }
+                              setExpandedGroups(newExpanded);
+                            }}
+                          />
+                        ))}
+            </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Alternative Same-Line Route Cards */}
+                {alternativeRoutes.map((altRoute, altIdx) => (
+                  <div 
+                    key={`same-line-alt-${altIdx}`} 
+                    className="result-card route-option-card alternative-route-option" 
+                    role="region" 
+                    aria-label={`Alternative same-line route option ${altIdx + 1}`}
+                    onClick={() => {
+                      const newExpanded = new Set(expandedRoutes);
+                      const routeId = 1 + altIdx;
+                      if (newExpanded.has(routeId)) {
+                        newExpanded.delete(routeId);
+                      } else {
+                        newExpanded.add(routeId);
+                      }
+                      setExpandedRoutes(newExpanded);
+                    }}
+                    style={{ 
+                      cursor: 'pointer',
+                      border: `2px solid ${getRatingBorderColor(altRoute.segments, false)}`
+                    }}
+                  >
+                    <div className="route-option-header">
+                      <div className="route-option-title">
+                        <div>
+                          <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                            LIKELY
+                          </span>
+                          <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                            No transfers required - direct route
+                          </div>
+                        </div>
+                      </div>
+                      <div className="route-option-time">
+                        {formatDuration(altRoute.total_time_minutes)}
+                        {altRoute.total_time_minutes > primaryRoute.total_time_minutes && (
+                          <span className="time-difference-inline">
+                            (+{(altRoute.total_time_minutes - primaryRoute.total_time_minutes).toFixed(0)}m)
+                          </span>
+                        )}
               </div>
             </div>
 
-              <h3 style={{ fontSize: '0.95rem', marginBottom: 'var(--spacing-md)', fontWeight: 600, color: 'var(--gray-700)' }}>Next Trains</h3>
-              <div className="same-line-trains" role="list" aria-label="Upcoming trains">
-              {sameLineRoute.next_trains && sameLineRoute.next_trains.length > 0 ? (
-                sameLineRoute.next_trains.map((train, idx) => (
-                  <div
-                    key={idx}
-                      className="train-item"
-                      role="listitem"
-                    style={{
-                        borderLeftColor: `#${sameLineRoute.line_color}`
-                      }}
-                    >
-                      <div className="train-countdown" style={{
-                        color: `#${sameLineRoute.line_color}`
-                      }}>
-                      Departs in {train.countdown_text}
+                    <div className="route-option-meta">
+                      {altRoute.departure_time && altRoute.arrival_time && (
+                        <span>{formatTime(altRoute.departure_time)} - {formatTime(altRoute.arrival_time)}</span>
+                      )}
+                      <span> • {altRoute.num_transfers} {altRoute.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
                     </div>
-                      <div className="train-arrival">
-                        Arrive: {formatTime(train.arrival_time)}
-                    </div>
-                      <div className="train-trip-time">
-                        Trip time: {formatDuration(train.total_trip_minutes)}
-                    </div>
+
+                    {expandedRoutes.has(1 + altIdx) && (
+                      <div 
+                        className="grouped-segments-list" 
+                        role="list" 
+                        aria-label={`Alternative same-line route ${altIdx + 1} segments`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {groupSegmentsByLine(altRoute.segments).map((group, idx) => (
+                          <GroupedSegmentDisplay
+                            key={`same-line-alt-${altIdx}-${idx}`}
+                            group={group}
+                            isExpanded={expandedGroups.has(1000 + altIdx * 100 + idx)}
+                            onToggle={() => {
+                              const newExpanded = new Set(expandedGroups);
+                              const groupId = 1000 + altIdx * 100 + idx;
+                              if (newExpanded.has(groupId)) {
+                                newExpanded.delete(groupId);
+                              } else {
+                                newExpanded.add(groupId);
+                              }
+                              setExpandedGroups(newExpanded);
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
-                ))
-              ) : (
-                  <div style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }} role="status">No upcoming trains</div>
-              )}
-            </div>
-          </div>
-        )}
+                ))}
+              </>
+            );
+          })()}
 
            {/* Comprehensive Route Result - Apple Maps Style */}
            {routeResult && !sameLineRoute?.is_same_line && (
@@ -1109,24 +1244,41 @@ function App() {
                          const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
                          const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
                          return (
-                           <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
-                             {ratingText}
-                           </span>
+                           <div>
+                             <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
+                               {ratingText}
+                             </span>
+                             <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                               {rating === 'unlikely' && 'You will have less than 2 minutes between trains'}
+                               {rating === 'risky' && 'You will have 2-5 minutes between trains'}
+                               {rating === 'likely' && 'You will have more than 5 minutes between trains'}
+                             </div>
+                           </div>
                          );
                        }
                        // Show LIKELY badge if no risky transfers (including 0 transfers)
                        if (!routeResult.has_risky_transfers) {
                          return (
-                           <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
-                             LIKELY
-                           </span>
+                           <div>
+                             <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                               LIKELY
+                             </span>
+                             <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                               {routeResult.num_transfers > 0 ? 'You will have more than 5 minutes between trains' : 'No transfers required - direct route'}
+                             </div>
+                           </div>
                          );
                        }
                        // Default to LIKELY if we can't determine
                        return (
-                         <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
-                           LIKELY
-                         </span>
+                         <div>
+                           <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                             LIKELY
+                           </span>
+                           <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                             No transfers required - direct route
+                           </div>
+                         </div>
                        );
                      })()}
                    </div>
@@ -1151,7 +1303,7 @@ function App() {
                    >
                      {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
                        <GroupedSegmentDisplay
-                         key={idx}
+                    key={idx}
                          group={group}
                          isExpanded={expandedGroups.has(idx)}
                          onToggle={() => {
@@ -1186,7 +1338,7 @@ function App() {
                     }
                     setExpandedRoutes(newExpanded);
                   }}
-                  style={{ 
+                    style={{
                     cursor: 'pointer',
                     border: `2px solid ${getRatingBorderColor(altRoute.segments, altRoute.has_risky_transfers)}`
                   }}
@@ -1201,24 +1353,41 @@ function App() {
                           const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
                           const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
                           return (
-                            <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
-                              {ratingText}
-                            </span>
+                            <div>
+                              <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
+                                {ratingText}
+                              </span>
+                              <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                                {rating === 'unlikely' && 'You will have less than 2 minutes between trains'}
+                                {rating === 'risky' && 'You will have 2-5 minutes between trains'}
+                                {rating === 'likely' && 'You will have more than 5 minutes between trains'}
+                    </div>
+                    </div>
                           );
                         }
                         // Show LIKELY badge if no risky transfers (including 0 transfers)
                         if (!altRoute.has_risky_transfers) {
                           return (
-                            <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
-                              LIKELY
-                            </span>
+                            <div>
+                              <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                                LIKELY
+                              </span>
+                              <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                                {altRoute.num_transfers > 0 ? 'You will have more than 5 minutes between trains' : 'No transfers required - direct route'}
+                    </div>
+                  </div>
                           );
                         }
                         // Default to LIKELY if we can't determine
                         return (
-                          <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
-                            LIKELY
-                          </span>
+                          <div>
+                            <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                              LIKELY
+                            </span>
+                            <div className="rating-explanation" style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>
+                              No transfers required - direct route
+                            </div>
+                          </div>
                         );
                       })()}
                     </div>
@@ -1232,7 +1401,7 @@ function App() {
                       <span>{formatTime(altRoute.departure_time)} - {formatTime(altRoute.arrival_time)}</span>
                     )}
                     <span> • {altRoute.num_transfers} {altRoute.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
-                  </div>
+            </div>
 
                   {expandedRoutes.has(1 + altIdx) && (
                     <div 
@@ -1258,7 +1427,7 @@ function App() {
                           }}
                         />
                       ))}
-                    </div>
+          </div>
                   )}
                 </div>
               ))}
@@ -1271,7 +1440,7 @@ function App() {
               <h2 className="result-card-title text-accent">Walking Route</h2>
 
               <p className="result-card-subtitle">
-                <strong>{result.station_1.name}</strong> → <strong>{result.station_2.name}</strong>
+              <strong>{result.station_1.name}</strong> → <strong>{result.station_2.name}</strong>
               </p>
 
               <div className="time-display">
