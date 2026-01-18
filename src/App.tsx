@@ -1,8 +1,52 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap, ZoomControl } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import './App.css';
+
+// Web Speech API types
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+
+interface SpeechRecognitionResultList {
+  length: number;
+  item(index: number): SpeechRecognitionResult;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionResult {
+  isFinal: boolean;
+  length: number;
+  item(index: number): SpeechRecognitionAlternative;
+  [index: number]: SpeechRecognitionAlternative;
+}
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: Event) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognition;
+    webkitSpeechRecognition: new () => SpeechRecognition;
+  }
+}
 
 // Fix for default marker icons in React-Leaflet
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -404,7 +448,141 @@ function formatDuration(minutes: number): string {
   }
 }
 
+// Voice Input Button Component
+function VoiceInputButton({
+  onStationsFound,
+  disabled
+}: {
+  onStationsFound: (fromStation: Station, toStation: Station) => void;
+  disabled?: boolean;
+}) {
+  const [isListening, setIsListening] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
 
+  // Check if speech recognition is supported
+  const isSpeechSupported = typeof window !== 'undefined' &&
+    (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  const startListening = async () => {
+    if (!isSpeechSupported) {
+      setError('Voice input not supported in this browser');
+      setTimeout(() => setError(null), 3000);
+      return;
+    }
+
+    setError(null);
+    setTranscript('');
+
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognitionAPI();
+
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          finalTranscript += result[0].transcript;
+        } else {
+          interimTranscript += result[0].transcript;
+        }
+      }
+
+      setTranscript(finalTranscript || interimTranscript);
+
+      // If we have a final transcript, parse it
+      if (finalTranscript) {
+        parseAndFindStations(finalTranscript);
+      }
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      setError('Could not hear you. Please try again.');
+      setTimeout(() => setError(null), 3000);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    setIsListening(false);
+  };
+
+  const parseAndFindStations = async (query: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/parse-route-query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.from_station && data.to_station) {
+        onStationsFound(data.from_station, data.to_station);
+        setTranscript('');
+      } else {
+        setError(data.error || "Couldn't understand. Try: 'From Harvard to Park Street'");
+        setTimeout(() => setError(null), 4000);
+      }
+    } catch (err) {
+      setError("Couldn't connect to server");
+      setTimeout(() => setError(null), 3000);
+    }
+  };
+
+  if (!isSpeechSupported) {
+    return null; // Don't show button if not supported
+  }
+
+  return (
+    <div className="voice-input-container">
+      <button
+        className={`voice-input-button ${isListening ? 'listening' : ''}`}
+        onClick={isListening ? stopListening : startListening}
+        disabled={disabled}
+        aria-label={isListening ? 'Stop listening' : 'Voice input'}
+        title={isListening ? 'Tap to stop' : 'Tap to speak your route'}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M19 10V12C19 15.866 15.866 19 12 19C8.13401 19 5 15.866 5 12V10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M12 19V23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          <path d="M8 23H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+
+      {/* Transcript/Error Display */}
+      {(isListening || transcript || error) && (
+        <div className={`voice-feedback ${error ? 'voice-error' : ''}`}>
+          {isListening && !transcript && <span>Listening...</span>}
+          {transcript && <span>"{transcript}"</span>}
+          {error && <span>{error}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function StationSearch({ 
   label, 
@@ -1348,17 +1526,25 @@ function App() {
         <div className="search-overlay">
           <div className="search-overlay-header">
             <div className="search-overlay-title">MBTA Route Finder</div>
-            <button
-              className="settings-button-compact"
-              onClick={() => setShowSettings(!showSettings)}
-              aria-label="Toggle settings"
-              title="Settings"
-            >
-              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M10 12.5C11.3807 12.5 12.5 11.3807 12.5 10C12.5 8.61929 11.3807 7.5 10 7.5C8.61929 7.5 7.5 8.61929 7.5 10C7.5 11.3807 8.61929 12.5 10 12.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M16.25 10C16.25 10 15.125 8.875 14.375 8.125L15.625 5.625C15.625 5.625 14.5 4.5 13.75 3.75L11.25 5C11.25 5 10.125 4.25 10 4.25C9.875 4.25 8.75 5 8.75 5L6.25 3.75C6.25 3.75 5.125 4.5 4.375 5.25L5.625 7.75C5.625 7.75 4.5 8.875 4.5 10C4.5 10.125 5.25 11.25 5.25 11.25L3.75 13.75C3.75 13.75 4.5 14.875 5.25 15.625L7.75 14.375C7.75 14.375 8.875 15.5 10 15.5C10.125 15.5 11.25 14.75 11.25 14.75L13.75 15.625C13.75 15.625 14.875 14.5 15.625 13.75L14.375 11.25C14.375 11.25 15.5 10.125 16.25 10Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+            <div className="search-overlay-buttons">
+              <VoiceInputButton
+                onStationsFound={(from, to) => {
+                  setStartStation(from);
+                  setEndStation(to);
+                }}
+              />
+              <button
+                className="settings-button-compact"
+                onClick={() => setShowSettings(!showSettings)}
+                aria-label="Toggle settings"
+                title="Settings"
+              >
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M10 12.5C11.3807 12.5 12.5 11.3807 12.5 10C12.5 8.61929 11.3807 7.5 10 7.5C8.61929 7.5 7.5 8.61929 7.5 10C7.5 11.3807 8.61929 12.5 10 12.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M16.25 10C16.25 10 15.125 8.875 14.375 8.125L15.625 5.625C15.625 5.625 14.5 4.5 13.75 3.75L11.25 5C11.25 5 10.125 4.25 10 4.25C9.875 4.25 8.75 5 8.75 5L6.25 3.75C6.25 3.75 5.125 4.5 4.375 5.25L5.625 7.75C5.625 7.75 4.5 8.875 4.5 10C4.5 10.125 5.25 11.25 5.25 11.25L3.75 13.75C3.75 13.75 4.5 14.875 5.25 15.625L7.75 14.375C7.75 14.375 8.875 15.5 10 15.5C10.125 15.5 11.25 14.75 11.25 14.75L13.75 15.625C13.75 15.625 14.875 14.5 15.625 13.75L14.375 11.25C14.375 11.25 15.5 10.125 16.25 10Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
           </div>
           <div className="search-overlay-controls">
             <StationSearch

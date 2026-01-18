@@ -573,6 +573,198 @@ async def search_stations(query: str, limit: int = 20):
     ]
     return results[:limit]
 
+
+# ============================================================================
+# Voice/Natural Language Route Query Parsing
+# ============================================================================
+
+class RouteQueryRequest(BaseModel):
+    query: str  # e.g., "Get me to Fenway from Downtown Crossing"
+
+class RouteQueryResponse(BaseModel):
+    success: bool
+    from_station: Optional[StationInfo] = None
+    to_station: Optional[StationInfo] = None
+    error: Optional[str] = None
+
+import re
+
+def parse_route_query(query: str) -> tuple:
+    """
+    Parse natural language route queries to extract station names.
+    Supports patterns like:
+    - "from Harvard to South Station"
+    - "get me to Fenway from Downtown Crossing"
+    - "Park Street to Alewife"
+    - "how do I get from Kendall to Back Bay"
+    """
+    query = query.lower().strip()
+
+    # Remove common filler words
+    query = re.sub(r'\b(please|now|quickly|asap|the|a|an)\b', '', query)
+    query = re.sub(r'\s+', ' ', query).strip()
+
+    # Pattern 1: "from X to Y" (most common)
+    match = re.search(r'from\s+(.+?)\s+to\s+(.+?)(?:\s*$)', query)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+
+    # Pattern 2: "to Y from X" or "get me to Y from X"
+    match = re.search(r'(?:get\s+(?:me\s+)?)?to\s+(.+?)\s+from\s+(.+)', query)
+    if match:
+        return match.group(2).strip(), match.group(1).strip()
+
+    # Pattern 3: "how do I get to Y from X"
+    match = re.search(r'how\s+(?:do\s+i\s+)?get\s+to\s+(.+?)\s+from\s+(.+)', query)
+    if match:
+        return match.group(2).strip(), match.group(1).strip()
+
+    # Pattern 4: simple "X to Y"
+    match = re.search(r'^(.+?)\s+to\s+(.+?)$', query)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+
+    return None, None
+
+def find_best_station_match(query: str) -> Optional[dict]:
+    """Find the best matching station for a query string."""
+    if not query:
+        return None
+
+    query_lower = query.lower().strip()
+    stations = MBTA_DATA.get("stations", [])
+
+    # First try exact match
+    for s in stations:
+        if s["name"].lower() == query_lower:
+            return s
+
+    # Then try starts-with match
+    for s in stations:
+        if s["name"].lower().startswith(query_lower):
+            return s
+
+    # Then try contains match
+    for s in stations:
+        if query_lower in s["name"].lower():
+            return s
+
+    # Handle common abbreviations and nicknames
+    abbreviations = {
+        "dtx": "downtown crossing",
+        "downtown": "downtown crossing",
+        "south sta": "south station",
+        "north sta": "north station",
+        "park st": "park street",
+        "harvard sq": "harvard",
+        "central sq": "central",
+        "kendall sq": "kendall/mit",
+        "mit": "kendall/mit",
+        "govt center": "government center",
+        "government ctr": "government center",
+        "mass ave": "massachusetts avenue",
+        "bu": "boston university",
+        "northeastern": "northeastern university",
+        "fenway": "kenmore",  # Close enough for voice
+        "airport": "airport",
+        "logan": "airport",
+    }
+
+    # Check if query matches any abbreviation
+    if query_lower in abbreviations:
+        expanded = abbreviations[query_lower]
+        for s in stations:
+            if expanded in s["name"].lower():
+                return s
+
+    # Try word-by-word matching for multi-word queries
+    query_words = set(query_lower.split())
+    best_match = None
+    best_score = 0
+
+    for s in stations:
+        station_words = set(s["name"].lower().split())
+        overlap = len(query_words & station_words)
+        if overlap > best_score:
+            best_score = overlap
+            best_match = s
+
+    if best_score > 0:
+        return best_match
+
+    return None
+
+@app.post("/api/parse-route-query", response_model=RouteQueryResponse)
+async def parse_route_query_endpoint(request: RouteQueryRequest):
+    """
+    Parse a natural language route query and return matched stations.
+
+    Examples:
+    - "Get me to Fenway from Downtown Crossing"
+    - "From Harvard to South Station"
+    - "Park Street to Alewife"
+    """
+    query = request.query.strip()
+
+    if not query:
+        return RouteQueryResponse(
+            success=False,
+            error="Please provide a route query"
+        )
+
+    # Parse the query to extract station names
+    from_name, to_name = parse_route_query(query)
+
+    if not from_name or not to_name:
+        return RouteQueryResponse(
+            success=False,
+            error="Couldn't understand that. Try: 'From Harvard to Park Street'"
+        )
+
+    # Find matching stations
+    from_station_data = find_best_station_match(from_name)
+    to_station_data = find_best_station_match(to_name)
+
+    if not from_station_data:
+        return RouteQueryResponse(
+            success=False,
+            error=f"Couldn't find station: '{from_name}'"
+        )
+
+    if not to_station_data:
+        return RouteQueryResponse(
+            success=False,
+            error=f"Couldn't find station: '{to_name}'"
+        )
+
+    # Convert to StationInfo
+    from_station = StationInfo(
+        id=from_station_data["id"],
+        name=from_station_data["name"],
+        latitude=from_station_data["latitude"],
+        longitude=from_station_data["longitude"],
+        lines=from_station_data["lines"],
+        municipality=from_station_data.get("municipality", ""),
+        wheelchair_boarding=from_station_data.get("wheelchair_boarding", 0)
+    )
+
+    to_station = StationInfo(
+        id=to_station_data["id"],
+        name=to_station_data["name"],
+        latitude=to_station_data["latitude"],
+        longitude=to_station_data["longitude"],
+        lines=to_station_data["lines"],
+        municipality=to_station_data.get("municipality", ""),
+        wheelchair_boarding=to_station_data.get("wheelchair_boarding", 0)
+    )
+
+    return RouteQueryResponse(
+        success=True,
+        from_station=from_station,
+        to_station=to_station
+    )
+
+
 @app.get("/api/transfer-station-data")
 async def get_transfer_station_data():
     """Get transfer station guidance data"""
