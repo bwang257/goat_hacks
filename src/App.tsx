@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap, ZoomControl } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import './App.css';
@@ -1857,12 +1857,11 @@ function App() {
 
           <ZoomTracker onZoomChange={setCurrentZoom} />
 
+          <ZoomControl position="bottomright" />
+
           {/* Render All Route Shapes (Background) */}
           {!result && !routeResult && !sameLineRoute && Object.entries(routeShapes).map(([routeId, shapes]) => {
-            // Skip commuter rail routes to avoid tangled lines
-            if (routeId.startsWith('CR-')) {
-              return null;
-            }
+            // Commuter rail routes are now enabled (purple lines)
 
             const color = getLineColor(routeId);
             // Only render the first shape for each route to avoid duplicates
@@ -1904,7 +1903,7 @@ function App() {
                                          seg.from_station_id === station.id || seg.to_station_id === station.id
                                        ));
             
-            if (!isSelectedOrOnRoute && currentZoom < 13) {
+            if (!isSelectedOrOnRoute && currentZoom < 14) {
               return null;
             }
 

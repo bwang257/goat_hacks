@@ -20,6 +20,13 @@
   z-index: 1;
 }
 
+/* Reposition Leaflet zoom controls to bottom-right */
+.leaflet-control-zoom {
+  margin: 0 !important;
+  margin-right: var(--spacing-md) !important;
+  margin-bottom: var(--spacing-md) !important;
+}
+
 /* Search Overlay Box */
 .search-overlay {
   position: absolute;
