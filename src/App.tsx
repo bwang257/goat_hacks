@@ -600,8 +600,7 @@ function App() {
   const [routeShapes, setRouteShapes] = useState<{ [key: string]: { id: string; coordinates: [number, number][]; }[] }>({});
   const [walkingSpeed, setWalkingSpeed] = useState<number>(5.0); // km/h
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
-  const [additionalAlternatives, setAdditionalAlternatives] = useState<RouteResult[]>([]);
-  const [loadingMoreAlternatives, setLoadingMoreAlternatives] = useState(false);
+  const [expandedRoutes, setExpandedRoutes] = useState<Set<number>>(new Set());
 
   // Helper function to get line color
   const getLineColor = (lineName: string) => {
@@ -675,7 +674,6 @@ function App() {
     setSameLineRoute(null);
     setRouteResult(null);
     setRouteGeometry([]);
-    setAdditionalAlternatives([]);
 
     try {
       // First, try to get a comprehensive route using the new API
@@ -841,38 +839,7 @@ function App() {
     setRouteResult(null);
     setRouteGeometry([]);
     setRouteSegments([]);
-    setAdditionalAlternatives([]);
-  };
-
-  const fetchMoreAlternatives = async () => {
-    if (!startStation || !endStation || !routeResult || loadingMoreAlternatives) {
-      return;
-    }
-
-    setLoadingMoreAlternatives(true);
-    try {
-      const response = await fetch(`${API_BASE}/api/route/alternatives`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          station_id_1: startStation.id,
-          station_id_2: endStation.id,
-          prefer_fewer_transfers: true,
-          use_realtime: true
-        })
-      });
-
-      if (response.ok) {
-        const additionalRoutes: RouteResult[] = await response.json();
-        setAdditionalAlternatives(additionalRoutes);
-      } else {
-        console.error('Error fetching additional alternatives:', response.status);
-      }
-    } catch (err) {
-      console.error('Error fetching additional alternatives:', err);
-    } finally {
-      setLoadingMoreAlternatives(false);
-    }
+    setExpandedRoutes(new Set());
   };
 
   return (
@@ -1057,158 +1024,106 @@ function App() {
           </div>
         )}
 
-          {/* Comprehensive Route Result - Apple Maps Style */}
-          {routeResult && !sameLineRoute?.is_same_line && (
-            <div className="result-card" role="article" aria-label="Trip options">
-              <h2 className="result-card-title text-accent">
-                Trip Options
-              </h2>
-
-              <p className="result-card-subtitle">
-                <strong>{startStation?.name}</strong> → <strong>{endStation?.name}</strong>
-              </p>
-
-              {/* Primary Route Option */}
-              <div className="route-option" role="region" aria-label="Earliest route option">
-                <div className="route-option-header">
-                  <div className="route-option-title">
-                    <span className="route-option-badge">Earliest</span>
-                    {(() => {
-                      const transferSegments = routeResult.segments.filter(s => s.transfer_rating);
-                      if (transferSegments.length > 0) {
-                        const hasUnlikely = transferSegments.some(s => s.transfer_rating === 'unlikely');
-                        const hasRisky = transferSegments.some(s => s.transfer_rating === 'risky');
-                        const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
-                        const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
-                        return (
-                          <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
-                            {ratingText}
-                          </span>
-                        );
-                      }
-                      // If no risky transfers, show LIKELY badge
-                      if (!routeResult.has_risky_transfers && routeResult.num_transfers > 0) {
-                        return (
-                          <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
-                            LIKELY
-                          </span>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </div>
-                  <div className="route-option-time">
-                    {formatDuration(routeResult.total_time_minutes)}
-                  </div>
-            </div>
+           {/* Comprehensive Route Result - Apple Maps Style */}
+           {routeResult && !sameLineRoute?.is_same_line && (
+             <>
+               {/* Primary Route Option */}
+               <div 
+                 className="result-card route-option-card" 
+                 role="region" 
+                 aria-label="Primary route option"
+                 onClick={() => {
+                   const newExpanded = new Set(expandedRoutes);
+                   if (newExpanded.has(0)) {
+                     newExpanded.delete(0);
+                   } else {
+                     newExpanded.add(0);
+                   }
+                   setExpandedRoutes(newExpanded);
+                 }}
+                 style={{ cursor: 'pointer' }}
+               >
+                 <div className="route-option-header">
+                   <div className="route-option-title">
+                     {(() => {
+                       const transferSegments = routeResult.segments.filter(s => s.transfer_rating);
+                       if (transferSegments.length > 0) {
+                         const hasUnlikely = transferSegments.some(s => s.transfer_rating === 'unlikely');
+                         const hasRisky = transferSegments.some(s => s.transfer_rating === 'risky');
+                         const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
+                         const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
+                         return (
+                           <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
+                             {ratingText}
+                           </span>
+                         );
+                       }
+                       // If no risky transfers, show LIKELY badge
+                       if (!routeResult.has_risky_transfers && routeResult.num_transfers > 0) {
+                         return (
+                           <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                             LIKELY
+                           </span>
+                         );
+                       }
+                       return null;
+                     })()}
+                   </div>
+                   <div className="route-option-time">
+                     {formatDuration(routeResult.total_time_minutes)}
+                   </div>
+                 </div>
             
-                <div className="route-option-meta">
-                  {routeResult.departure_time && routeResult.arrival_time && (
-                    <span>{formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
-                  )}
-                  <span> • {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
-                </div>
+                 <div className="route-option-meta">
+                   {routeResult.departure_time && routeResult.arrival_time && (
+                     <span>{formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
+                   )}
+                   <span> • {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
+                 </div>
+            
+                 {expandedRoutes.has(0) && (
+                   <div className="grouped-segments-list" role="list" aria-label="Route segments">
+                     {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
+                       <GroupedSegmentDisplay
+                         key={idx}
+                         group={group}
+                         isExpanded={expandedGroups.has(idx)}
+                         onToggle={() => {
+                           const newExpanded = new Set(expandedGroups);
+                           if (newExpanded.has(idx)) {
+                             newExpanded.delete(idx);
+                           } else {
+                             newExpanded.add(idx);
+                           }
+                           setExpandedGroups(newExpanded);
+                         }}
+                       />
+                     ))}
+                   </div>
+                 )}
+               </div>
 
-                <div className="grouped-segments-list" role="list" aria-label="Route segments">
-                  {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
-                    <GroupedSegmentDisplay
-                      key={idx}
-                      group={group}
-                      isExpanded={expandedGroups.has(idx)}
-                      onToggle={() => {
-                        const newExpanded = new Set(expandedGroups);
-                        if (newExpanded.has(idx)) {
-                          newExpanded.delete(idx);
-                        } else {
-                          newExpanded.add(idx);
-                        }
-                        setExpandedGroups(newExpanded);
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Alternative Route Option (Safest) */}
-              {routeResult.alternatives && routeResult.alternatives.length > 0 && (
-                <div className="route-option alternative-route-option" role="region" aria-label="Safer alternative route option">
+              {/* Alternative Route Options - Always show 2 alternatives */}
+              {routeResult.alternatives && routeResult.alternatives.slice(0, 2).map((altRoute, altIdx) => (
+                <div 
+                  key={`alt-${altIdx}`} 
+                  className="result-card route-option-card alternative-route-option" 
+                  role="region" 
+                  aria-label={`Alternative route option ${altIdx + 1}`}
+                  onClick={() => {
+                    const newExpanded = new Set(expandedRoutes);
+                    const routeId = 1 + altIdx;
+                    if (newExpanded.has(routeId)) {
+                      newExpanded.delete(routeId);
+                    } else {
+                      newExpanded.add(routeId);
+                    }
+                    setExpandedRoutes(newExpanded);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
                   <div className="route-option-header">
                     <div className="route-option-title">
-                      <span className="route-option-badge alternative-badge">Next Train</span>
-                      {(() => {
-                        const transferSegments = routeResult.alternatives[0].segments.filter(s => s.transfer_rating);
-                        if (transferSegments.length > 0) {
-                          const hasUnlikely = transferSegments.some(s => s.transfer_rating === 'unlikely');
-                          const hasRisky = transferSegments.some(s => s.transfer_rating === 'risky');
-                          const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
-                          const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
-                          return (
-                            <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
-                              {ratingText}
-                            </span>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                    <div className="route-option-time">
-                      {formatDuration(routeResult.alternatives[0].total_time_minutes)}
-                      {routeResult.alternatives[0].total_time_minutes > routeResult.total_time_minutes && (
-                        <span className="time-difference-inline">
-                          (+{(routeResult.alternatives[0].total_time_minutes - routeResult.total_time_minutes).toFixed(0)}m)
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="route-option-meta">
-                    {routeResult.alternatives[0].departure_time && routeResult.alternatives[0].arrival_time && (
-                      <span>{formatTime(routeResult.alternatives[0].departure_time)} - {formatTime(routeResult.alternatives[0].arrival_time)}</span>
-                    )}
-                    <span> • {routeResult.alternatives[0].num_transfers} {routeResult.alternatives[0].num_transfers === 1 ? 'transfer' : 'transfers'}</span>
-                  </div>
-
-                  <div className="grouped-segments-list" role="list" aria-label="Alternative route segments">
-                    {groupSegmentsByLine(routeResult.alternatives[0].segments).map((group, idx) => (
-                      <GroupedSegmentDisplay
-                        key={`alt-${idx}`}
-                        group={group}
-                        isExpanded={expandedGroups.has(1000 + idx)}
-                        onToggle={() => {
-                          const newExpanded = new Set(expandedGroups);
-                          const groupId = 1000 + idx;
-                          if (newExpanded.has(groupId)) {
-                            newExpanded.delete(groupId);
-                          } else {
-                            newExpanded.add(groupId);
-                          }
-                          setExpandedGroups(newExpanded);
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Show More Options Button */}
-              {(!routeResult.has_risky_transfers || (routeResult.alternatives && routeResult.alternatives.length > 0)) && (
-                <div className="more-alternatives">
-                  <button 
-                    className="more-alternatives-button"
-                    onClick={fetchMoreAlternatives}
-                    disabled={loadingMoreAlternatives || additionalAlternatives.length > 0}
-                  >
-                    {loadingMoreAlternatives ? 'Loading...' : additionalAlternatives.length > 0 ? 'No more options' : 'Show More Options'}
-                  </button>
-                </div>
-              )}
-
-              {/* Display Additional Alternatives */}
-              {additionalAlternatives.map((altRoute, altIdx) => (
-                <div key={`additional-${altIdx}`} className="route-option alternative-route-option" role="region" aria-label={`Alternative route option ${altIdx + 1}`}>
-                  <div className="route-option-header">
-                    <div className="route-option-title">
-                      <span className="route-option-badge alternative-badge">Option {altIdx + 1 + (routeResult.alternatives?.length || 0) + 1}</span>
                       {(() => {
                         const transferSegments = altRoute.segments.filter(s => s.transfer_rating);
                         if (transferSegments.length > 0) {
@@ -1242,28 +1157,30 @@ function App() {
                     <span> • {altRoute.num_transfers} {altRoute.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
                   </div>
 
-                  <div className="grouped-segments-list" role="list" aria-label={`Additional alternative route ${altIdx + 1} segments`}>
-                    {groupSegmentsByLine(altRoute.segments).map((group, idx) => (
-                      <GroupedSegmentDisplay
-                        key={`additional-alt-${altIdx}-${idx}`}
-                        group={group}
-                        isExpanded={expandedGroups.has(2000 + altIdx * 100 + idx)}
-                        onToggle={() => {
-                          const newExpanded = new Set(expandedGroups);
-                          const groupId = 2000 + altIdx * 100 + idx;
-                          if (newExpanded.has(groupId)) {
-                            newExpanded.delete(groupId);
-                          } else {
-                            newExpanded.add(groupId);
-                          }
-                          setExpandedGroups(newExpanded);
-                        }}
-                      />
-                    ))}
-                  </div>
+                  {expandedRoutes.has(1 + altIdx) && (
+                    <div className="grouped-segments-list" role="list" aria-label={`Alternative route ${altIdx + 1} segments`}>
+                      {groupSegmentsByLine(altRoute.segments).map((group, idx) => (
+                        <GroupedSegmentDisplay
+                          key={`alt-${altIdx}-${idx}`}
+                          group={group}
+                          isExpanded={expandedGroups.has(1000 + altIdx * 100 + idx)}
+                          onToggle={() => {
+                            const newExpanded = new Set(expandedGroups);
+                            const groupId = 1000 + altIdx * 100 + idx;
+                            if (newExpanded.has(groupId)) {
+                              newExpanded.delete(groupId);
+                            } else {
+                              newExpanded.add(groupId);
+                            }
+                            setExpandedGroups(newExpanded);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
-            </div>
+            </>
           )}
 
           {/* Walking Route Result */}
