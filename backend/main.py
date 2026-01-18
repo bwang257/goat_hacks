@@ -6,6 +6,8 @@ from realtime_same_line import RealtimeSameLineRouter
 from mbta_client import MBTAClient
 from multi_route_planner import MultiRoutePlanner
 from dijkstra_router import DijkstraRouter
+from event_service import get_event_service, EventImpact
+from weather_service import get_weather_service, WeatherService
 
 from typing import List
 import httpx
@@ -842,6 +844,7 @@ class RouteSegmentResponse(BaseModel):
     time_seconds: float
     time_minutes: float
     distance_meters: float
+    distance_km: Optional[float] = None  # Added for walking distance display
     departure_time: Optional[str] = None
     arrival_time: Optional[str] = None
     status: Optional[str] = None
@@ -849,6 +852,24 @@ class RouteSegmentResponse(BaseModel):
     transfer_rating: Optional[str] = None  # "likely", "risky", or "unlikely"
     slack_time_seconds: Optional[float] = None  # Slack time for transfers
     buffer_seconds: Optional[int] = None  # Required buffer time for transfers
+
+class EventWarning(BaseModel):
+    """Event warning for a route."""
+    has_event: bool = False
+    event_name: Optional[str] = None
+    event_type: Optional[str] = None  # "sports", "concert", "other"
+    affected_stations: List[str] = []
+    congestion_level: Optional[str] = None  # "moderate", "high", "very_high"
+    message: Optional[str] = None
+
+class WeatherWarning(BaseModel):
+    """Weather warning for walking segments."""
+    has_warning: bool = False
+    condition: Optional[str] = None  # "rain", "snow", "extreme_cold", "extreme_heat"
+    temperature_f: Optional[float] = None
+    description: Optional[str] = None
+    walking_time_adjustment: float = 1.0  # Multiplier (1.1 = +10%)
+    message: Optional[str] = None
 
 class RouteResponse(BaseModel):
     segments: List[RouteSegmentResponse]
@@ -861,6 +882,9 @@ class RouteResponse(BaseModel):
     arrival_time: Optional[str] = None
     has_risky_transfers: bool = False  # True if any transfer is risky/unlikely
     alternatives: List['RouteResponse'] = []  # Alternative safer routes
+    # New: Event and weather warnings
+    event_warning: Optional[EventWarning] = None
+    weather_warning: Optional[WeatherWarning] = None
 
 class RouteRequest(BaseModel):
     station_id_1: str
@@ -1009,8 +1033,85 @@ async def find_route(
         except Exception as e:
             print(f"Error finding alternative routes: {e}")
 
+    # Check for events affecting this route
+    event_warning_response = None
+    try:
+        event_service = get_event_service()
+        route_station_ids = []
+        for seg in route.segments:
+            route_station_ids.append(seg.from_station)
+            route_station_ids.append(seg.to_station)
+        route_station_ids = list(set(route_station_ids))  # Deduplicate
+
+        event_impact = event_service.check_events_for_route(route_station_ids, dep_time)
+        if event_impact.has_event:
+            # Convert congestion multiplier to level
+            if event_impact.congestion_multiplier >= 1.4:
+                congestion_level = "very_high"
+            elif event_impact.congestion_multiplier >= 1.2:
+                congestion_level = "high"
+            else:
+                congestion_level = "moderate"
+
+            # Get affected station names
+            affected_station_names = [
+                TRANSIT_GRAPH.get_station_name(sid) or sid
+                for sid in event_impact.affected_stations
+            ]
+
+            event_warning_response = EventWarning(
+                has_event=True,
+                event_name=event_impact.event_name,
+                event_type=event_impact.event_type,
+                affected_stations=affected_station_names,
+                congestion_level=congestion_level,
+                message=f"Expect {congestion_level.replace('_', ' ')} congestion at {', '.join(affected_station_names)} due to {event_impact.event_name}"
+            )
+    except Exception as e:
+        print(f"Error checking events: {e}")
+
+    # Check weather for walking segments
+    weather_warning_response = None
+    has_walking_segments = any(seg.type == "walk" for seg in route.segments)
+    if has_walking_segments:
+        try:
+            weather_service = await get_weather_service()
+            weather_data = await weather_service.get_current_weather()
+            adjustment = weather_service.calculate_weather_adjustment(weather_data)
+
+            if weather_data and adjustment > 1.0:
+                # Determine condition type
+                text_desc = weather_data.get("text_description", "").lower()
+                temp_c = weather_data.get("temperature")
+                temp_f = (temp_c * 9/5) + 32 if temp_c is not None else None
+
+                condition = None
+                if "rain" in text_desc or "drizzle" in text_desc:
+                    condition = "rain"
+                elif "snow" in text_desc or "sleet" in text_desc or "blizzard" in text_desc:
+                    condition = "snow"
+                elif temp_f is not None and temp_f < 20:
+                    condition = "extreme_cold"
+                elif temp_f is not None and temp_f > 90:
+                    condition = "extreme_heat"
+
+                adjustment_pct = int((adjustment - 1.0) * 100)
+                weather_warning_response = WeatherWarning(
+                    has_warning=True,
+                    condition=condition,
+                    temperature_f=round(temp_f, 1) if temp_f else None,
+                    description=weather_data.get("text_description"),
+                    walking_time_adjustment=adjustment,
+                    message=f"Walking times increased by {adjustment_pct}% due to {weather_data.get('text_description', 'weather conditions')}"
+                )
+        except Exception as e:
+            print(f"Error checking weather: {e}")
+
     segments = []
     for seg in route.segments:
+        # Calculate distance_km for walking segments
+        distance_km = round(seg.distance_meters / 1000, 2) if seg.distance_meters else None
+
         seg_response = RouteSegmentResponse(
             from_station_id=seg.from_station,
             from_station_name=TRANSIT_GRAPH.get_station_name(seg.from_station) or "Unknown Station",
@@ -1022,6 +1123,7 @@ async def find_route(
             time_seconds=seg.time_seconds,
             time_minutes=round(seg.time_seconds / 60, 1),
             distance_meters=seg.distance_meters,
+            distance_km=distance_km,
             departure_time=seg.departure_time.isoformat() if seg.departure_time else None,
             arrival_time=seg.arrival_time.isoformat() if seg.arrival_time else None,
             status=seg.status,
@@ -1116,7 +1218,9 @@ async def find_route(
         departure_time=route.departure_time.isoformat() if route.departure_time else None,
         arrival_time=route.arrival_time.isoformat() if route.arrival_time else None,
         has_risky_transfers=has_risky_transfers,
-        alternatives=alternatives_response
+        alternatives=alternatives_response,
+        event_warning=event_warning_response,
+        weather_warning=weather_warning_response
     )
 
 @app.post("/api/route/alternatives", response_model=List[RouteResponse])

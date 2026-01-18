@@ -81,6 +81,7 @@ interface RouteSegment {
   time_seconds: number;
   time_minutes: number;
   distance_meters: number;
+  distance_km?: number;  // Added for walking distance display
   departure_time?: string;
   arrival_time?: string;
   status?: string;
@@ -88,6 +89,24 @@ interface RouteSegment {
   transfer_rating?: 'likely' | 'risky' | 'unlikely';
   slack_time_seconds?: number;
   buffer_seconds?: number;
+}
+
+interface EventWarning {
+  has_event: boolean;
+  event_name?: string;
+  event_type?: string;  // "sports", "concert", "other"
+  affected_stations: string[];
+  congestion_level?: string;  // "moderate", "high", "very_high"
+  message?: string;
+}
+
+interface WeatherWarning {
+  has_warning: boolean;
+  condition?: string;  // "rain", "snow", "extreme_cold", "extreme_heat"
+  temperature_f?: number;
+  description?: string;
+  walking_time_adjustment: number;  // Multiplier (1.1 = +10%)
+  message?: string;
 }
 
 interface RouteResult {
@@ -101,6 +120,8 @@ interface RouteResult {
   arrival_time?: string;
   has_risky_transfers?: boolean;
   alternatives?: RouteResult[];
+  event_warning?: EventWarning;
+  weather_warning?: WeatherWarning;
 }
 
 // Grouped segment for Apple Maps-style display
@@ -701,7 +722,19 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle, transferStationDat
   };
 
   const cleanLine = group.line?.replace(' Line', '').trim() || '';
-  const lineColor = lineColors[cleanLine] || '#666';
+
+  // Check if it's a commuter rail line (starts with CR- or is a known commuter rail name)
+  const commuterRailLines = [
+    'Framingham/Worcester', 'Providence/Stoughton', 'Lowell', 'Haverhill',
+    'Fitchburg', 'Newburyport/Rockport', 'Kingston', 'Greenbush',
+    'Needham', 'Fairmount', 'Franklin/Foxboro', 'Fall River/New Bedford',
+    'Foxboro Event Service'
+  ];
+  const isCommuterRail = cleanLine.startsWith('CR-') ||
+    commuterRailLines.some(cr => cleanLine.includes(cr)) ||
+    (group.line && (group.line.startsWith('CR-') || commuterRailLines.some(cr => group.line!.includes(cr))));
+
+  const lineColor = isCommuterRail ? '#80276C' : (lineColors[cleanLine] || '#80276C');
 
   if (group.type === 'train') {
     return (
@@ -793,6 +826,20 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle, transferStationDat
       </div>
     );
   } else {
+    // Walk segment - show time and distance in miles
+    const walkSegment = group.segments[0];
+    const distanceKm = walkSegment?.distance_km;
+    const distanceMeters = walkSegment?.distance_meters;
+    // Convert to miles (1 km = 0.621371 miles, 1 m = 0.000621371 miles)
+    const distanceMiles = distanceKm
+      ? distanceKm * 0.621371
+      : distanceMeters
+        ? distanceMeters * 0.000621371
+        : null;
+    const distanceDisplay = distanceMiles
+      ? `${distanceMiles.toFixed(2)} mi`
+      : null;
+
     return (
       <div className="grouped-segment walk-segment" role="listitem">
         <div className="grouped-segment-header">
@@ -805,6 +852,9 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle, transferStationDat
         </div>
         <div className="grouped-segment-time">
           {formatDuration(group.segments[0]?.time_minutes || 0)}
+          {distanceDisplay && (
+            <span className="walk-distance"> ({distanceDisplay})</span>
+          )}
         </div>
       </div>
     );
@@ -1389,6 +1439,36 @@ function App() {
             </div>
           </div>
           <div className="results-overlay-content">
+            {/* Event Warning Banner */}
+            {routeResult?.event_warning?.has_event && (
+              <div className="warning-banner event-warning-banner" role="alert">
+                <div className="warning-banner-icon">!</div>
+                <div className="warning-banner-content">
+                  <div className="warning-banner-title">
+                    {routeResult.event_warning.event_type === 'sports' ? 'Game Day' : 'Event Alert'}
+                  </div>
+                  <div className="warning-banner-message">
+                    {routeResult.event_warning.message || `${routeResult.event_warning.event_name} - Expect higher congestion at affected stations`}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Weather Warning Banner */}
+            {routeResult?.weather_warning?.has_warning && (
+              <div className="warning-banner weather-warning-banner" role="alert">
+                <div className="warning-banner-icon">
+                  {routeResult.weather_warning.condition === 'rain' || routeResult.weather_warning.condition === 'snow' ? '~' : '*'}
+                </div>
+                <div className="warning-banner-content">
+                  <div className="warning-banner-title">Weather Advisory</div>
+                  <div className="warning-banner-message">
+                    {routeResult.weather_warning.message || `${routeResult.weather_warning.description} - Walking times adjusted by ${Math.round((routeResult.weather_warning.walking_time_adjustment - 1) * 100)}%`}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="results-container">
           {/* Same-line route result - Convert to RouteResult format */}
           {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (() => {

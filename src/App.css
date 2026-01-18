@@ -643,6 +643,11 @@
   color: var(--white);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
 
 .segment-time {
@@ -1195,18 +1200,17 @@ body {
 
 .grouped-segment-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: var(--spacing-xs);
   cursor: pointer;
   user-select: none;
 }
 
 .grouped-segment-line {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--spacing-sm);
-  flex: 1;
-  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .grouped-segment-route {
@@ -1215,14 +1219,15 @@ body {
   color: var(--gray-900);
   word-wrap: break-word;
   overflow-wrap: break-word;
+  flex: 1;
+  min-width: 0;
 }
 
 .grouped-segment-info {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  margin-left: auto;
-  padding-left: var(--spacing-sm);
+  align-self: flex-end;
 }
 
 .grouped-segment-stops {
@@ -1449,4 +1454,92 @@ body {
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+
+/* ============================================================================
+   WARNING BANNERS (Event & Weather)
+   ============================================================================ */
+
+.warning-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-md);
+  border: 1px solid;
+}
+
+.warning-banner-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.warning-banner-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.warning-banner-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 2px;
+}
+
+.warning-banner-message {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  word-wrap: break-word;
+}
+
+/* Event Warning - Orange/Amber theme */
+.event-warning-banner {
+  background: #fffbeb;
+  border-color: #fbbf24;
+}
+
+.event-warning-banner .warning-banner-icon {
+  background: #f59e0b;
+  color: white;
+}
+
+.event-warning-banner .warning-banner-title {
+  color: #b45309;
+}
+
+.event-warning-banner .warning-banner-message {
+  color: #92400e;
+}
+
+/* Weather Warning - Blue theme */
+.weather-warning-banner {
+  background: #eff6ff;
+  border-color: #3b82f6;
+}
+
+.weather-warning-banner .warning-banner-icon {
+  background: #3b82f6;
+  color: white;
+}
+
+.weather-warning-banner .warning-banner-title {
+  color: #1d4ed8;
+}
+
+.weather-warning-banner .warning-banner-message {
+  color: #1e40af;
+}
+
+/* Walk distance display in grouped segments */
+.walk-distance {
+  color: var(--gray-500);
+  font-size: 0.75rem;
+  font-weight: 400;
 }
