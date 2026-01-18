@@ -256,8 +256,8 @@ function StationSearch({
   };
 
   return (
-    <div style={{ position: 'relative', marginBottom: '1rem' }}>
-      <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+    <div className="station-search-wrapper">
+      <label className="station-search-label">
         {label}
       </label>
       <input
@@ -268,44 +268,19 @@ function StationSearch({
           if (selectedStation) onSelect(null as any);
         }}
         placeholder="Search for a station..."
-        style={{
-          width: '100%',
-          padding: '0.5rem',
-          fontSize: '1rem',
-          border: '1px solid #ccc',
-          borderRadius: '4px'
-        }}
+        className="station-search-input"
       />
 
       {showResults && results.length > 0 && (
-        <ul style={{
-          position: 'absolute',
-          background: 'white',
-          border: '1px solid #ccc',
-          borderRadius: '4px',
-          listStyle: 'none',
-          padding: 0,
-          margin: '4px 0 0 0',
-          maxHeight: '200px',
-          overflow: 'auto',
-          zIndex: 1000,
-          width: '100%',
-          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-        }}>
+        <ul className="search-results">
           {results.map(station => (
             <li
               key={station.id}
               onClick={() => selectStation(station)}
-              style={{
-                padding: '0.75rem',
-                cursor: 'pointer',
-                borderBottom: '1px solid #eee'
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
-              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'white'}
+              className="search-result-item"
             >
-              <div style={{ fontWeight: 'bold' }}>{station.name}</div>
-              <div style={{ fontSize: '0.85rem', color: '#666' }}>
+              <div className="search-result-name">{station.name}</div>
+              <div className="search-result-meta">
                 {station.lines.join(', ')} • {station.municipality}
               </div>
             </li>
@@ -610,20 +585,15 @@ function App() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh' }}>
+    <div className="app-container">
       {/* Sidebar */}
-      <div style={{
-        width: '380px',
-        padding: '1.5rem',
-        backgroundColor: '#f8f9fa',
-        overflowY: 'auto',
-        borderRight: '1px solid #ddd'
-      }}>
-        <h1 style={{ marginTop: 0, fontSize: '1.5rem' }}>MBTA Route Finder</h1>
-
-        <p style={{ color: '#999', fontSize: '0.85rem', marginBottom: '1.5rem' }}>
-          Select two stations to find the best route between them
-        </p>
+      <div className="sidebar">
+        <div className="header">
+          <h1 className="header-title">🚇 MBTA Route Finder</h1>
+          <p className="header-subtitle">
+            Select two stations to find the best route between them
+          </p>
+        </div>
 
         {/* Start Station */}
         <StationSearch
@@ -640,9 +610,9 @@ function App() {
         />
 
         {/* Walking Speed Control */}
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
-            Walking Speed: {walkingSpeed} km/h
+        <div className="control-group">
+          <label className="control-label">
+            Walking Speed: {walkingSpeed.toFixed(1)} km/h
           </label>
           <input
             type="range"
@@ -651,236 +621,206 @@ function App() {
             step="0.5"
             value={walkingSpeed}
             onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
-            style={{ width: '100%' }}
+            className="range-slider"
           />
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#666' }}>
-            <span>Slow (2 km/h)</span>
-            <span>Fast (8 km/h)</span>
+          <div className="range-labels">
+            <span>🚶 Slow (2 km/h)</span>
+            <span>🏃 Fast (8 km/h)</span>
           </div>
         </div>
 
         <button
           onClick={clearSelection}
-          style={{
-            width: '100%',
-            padding: '0.5rem',
-            marginBottom: '1.5rem',
-            backgroundColor: '#6c757d',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '0.9rem'
-          }}
+          className="button button-secondary"
         >
           Clear Selection
         </button>
 
-        {/* Results */}
-        {sameLineRoute && sameLineRoute.is_same_line && (
-          <div style={{
-            backgroundColor: 'white',
-            padding: '1rem',
-            borderRadius: '8px',
-            border: `3px solid #${sameLineRoute.line_color}`
-          }}>
-            <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: `#${sameLineRoute.line_color}` }}>
-              {sameLineRoute.line_name}
-            </h2>
-
-            <div style={{ marginBottom: '0.75rem' }}>
-              <strong>{sameLineRoute.from_station_name}</strong> → <strong>{sameLineRoute.to_station_name}</strong>
-            </div>
-
-            <div style={{
-              backgroundColor: '#f0f8ff',
-              padding: '0.75rem',
-              borderRadius: '4px',
-              marginBottom: '1rem'
+        {/* Results Container */}
+        <div className="results-container">
+          {/* Same-line route result */}
+          {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (
+            <div className="result-card same-line-route" style={{
+              borderColor: `#${sameLineRoute.line_color}`
             }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: `#${sameLineRoute.line_color}` }}>
-                {formatDuration(sameLineRoute.scheduled_time_minutes || 0)}
+              <h2 className="result-card-title" style={{
+                color: `#${sameLineRoute.line_color}`
+              }}>
+                {sameLineRoute.line_name}
+              </h2>
+
+              <p className="result-card-subtitle">
+                <strong>{sameLineRoute.from_station_name}</strong> → <strong>{sameLineRoute.to_station_name}</strong>
+              </p>
+
+              <div className="time-display" style={{
+                backgroundColor: `rgba(${parseInt(sameLineRoute.line_color.slice(0, 2), 16)}, ${parseInt(sameLineRoute.line_color.slice(2, 4), 16)}, ${parseInt(sameLineRoute.line_color.slice(4, 6), 16)}, 0.08)`,
+                borderColor: `#${sameLineRoute.line_color}`
+              }}>
+                <div className="time-value" style={{
+                  color: `#${sameLineRoute.line_color}`
+                }}>
+                  {formatDuration(sameLineRoute.scheduled_time_minutes || 0)}
+                </div>
               </div>
-            </div>
 
-            <h3 style={{ marginTop: '1rem', marginBottom: '0.75rem', fontSize: '0.95rem' }}>Next Trains</h3>
-            <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
-              {sameLineRoute.next_trains && sameLineRoute.next_trains.length > 0 ? (
-                sameLineRoute.next_trains.map((train, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      backgroundColor: '#f8f9fa',
-                      padding: '0.5rem',
-                      marginBottom: '0.4rem',
-                      borderRadius: '3px',
-                      borderLeft: `3px solid #${sameLineRoute.line_color}`
-                    }}
-                  >
-                    <div style={{ fontWeight: 'bold', color: `#${sameLineRoute.line_color}`, fontSize: '0.95rem' }}>
-                      Departs in {train.countdown_text}
+              <h3 style={{ fontSize: '0.95rem', marginBottom: 'var(--spacing-md)', fontWeight: 600, color: 'var(--gray-700)' }}>Next Trains</h3>
+              <div className="same-line-trains">
+                {sameLineRoute.next_trains && sameLineRoute.next_trains.length > 0 ? (
+                  sameLineRoute.next_trains.map((train, idx) => (
+                    <div
+                      key={idx}
+                      className="train-item"
+                      style={{
+                        borderLeftColor: `#${sameLineRoute.line_color}`
+                      }}
+                    >
+                      <div className="train-countdown" style={{
+                        color: `#${sameLineRoute.line_color}`
+                      }}>
+                        ⏱️ Departs in {train.countdown_text}
+                      </div>
+                      <div className="train-arrival">
+                        📍 Arrive: {formatTime(train.arrival_time)}
+                      </div>
+                      <div className="train-trip-time">
+                        Trip time: {formatDuration(train.total_trip_minutes)}
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
-                      📍 Arrive at destination: {formatTime(train.arrival_time)}
-                    </div>
-                    <div style={{ fontSize: '0.8rem', color: '#888', marginTop: '0.15rem' }}>
-                      Total trip time: {formatDuration(train.total_trip_minutes)}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div style={{ color: '#999', fontSize: '0.85rem' }}>No upcoming trains</div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Comprehensive Route Result */}
-        {routeResult && !sameLineRoute?.is_same_line && (
-          <div style={{
-            backgroundColor: 'white',
-            padding: '1rem',
-            borderRadius: '8px',
-            border: '1px solid #ddd',
-            marginBottom: '1rem'
-          }}>
-            <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: '#0066cc' }}>
-              Trip Plan
-            </h2>
-
-            <div style={{ marginBottom: '0.75rem' }}>
-              <strong>{startStation?.name}</strong> → <strong>{endStation?.name}</strong>
-            </div>
-
-            <div style={{
-              backgroundColor: '#e7f3ff',
-              padding: '0.75rem',
-              borderRadius: '4px',
-              marginBottom: '1rem'
-            }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0066cc' }}>
-                {formatDuration(routeResult.total_time_minutes)}
-              </div>
-              <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
-                {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}
-                {routeResult.departure_time && routeResult.arrival_time && (
-                  <span> • {formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
+                  ))
+                ) : (
+                  <div style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>No upcoming trains</div>
                 )}
               </div>
             </div>
+          )}
 
-            <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-              {routeResult.segments.map((seg, idx) => {
-                const lineColors: { [key: string]: string } = {
-                  'Red': '#DA291C',
-                  'Orange': '#ED8B00',
-                  'Blue': '#003DA5',
-                  'Green': '#00843D',
-                  'B': '#00843D',
-                  'C': '#00843D',
-                  'D': '#00843D',
-                  'E': '#00843D',
-                };
-                const cleanLine = seg.line?.replace(' Line', '').trim() || '';
-                const lineColor = lineColors[cleanLine] || '#666';
+          {/* Comprehensive Route Result */}
+          {routeResult && !sameLineRoute?.is_same_line && (
+            <div className="result-card">
+              <h2 className="result-card-title text-accent">
+                ✨ Trip Plan
+              </h2>
 
-                return (
-                  <div key={idx} style={{
-                    marginBottom: '0.75rem',
-                    padding: '0.75rem',
-                    backgroundColor: '#f8f9fa',
-                    borderRadius: '4px',
-                    borderLeft: `4px solid ${seg.type === 'train' ? lineColor : seg.type === 'transfer' ? '#FFA500' : '#0066cc'}`
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                      <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>
-                        {seg.type === 'train' && seg.line && (
-                          <span style={{
-                            backgroundColor: lineColor,
-                            color: 'white',
-                            padding: '2px 6px',
-                            borderRadius: '3px',
-                            fontSize: '11px',
-                            fontWeight: 'bold',
-                            marginRight: '6px'
-                          }}>
-                            {cleanLine}
+              <p className="result-card-subtitle">
+                <strong>{startStation?.name}</strong> → <strong>{endStation?.name}</strong>
+              </p>
+
+              <div className="time-display">
+                <div className="time-value">
+                  {formatDuration(routeResult.total_time_minutes)}
+                </div>
+                <div className="time-meta">
+                  {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}
+                  {routeResult.departure_time && routeResult.arrival_time && (
+                    <span> • {formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="segment-list">
+                {routeResult.segments.map((seg, idx) => {
+                  const lineColors: { [key: string]: string } = {
+                    'Red': '#DA291C',
+                    'Orange': '#ED8B00',
+                    'Blue': '#003DA5',
+                    'Green': '#00843D',
+                    'B': '#00843D',
+                    'C': '#00843D',
+                    'D': '#00843D',
+                    'E': '#00843D',
+                  };
+                  const cleanLine = seg.line?.replace(' Line', '').trim() || '';
+                  const lineColor = lineColors[cleanLine] || '#666';
+                  const borderColor = seg.type === 'train' ? lineColor : seg.type === 'transfer' ? '#FFA500' : '#0066cc';
+
+                  return (
+                    <div key={idx} className="segment-item" style={{
+                      borderLeftColor: borderColor
+                    }}>
+                      <div className="segment-header">
+                        <div>
+                          {seg.type === 'train' && seg.line && (
+                            <span className="segment-badge" style={{
+                              backgroundColor: lineColor
+                            }}>
+                              {cleanLine}
+                            </span>
+                          )}
+                          {seg.type === 'transfer' && (
+                            <span className="segment-badge" style={{
+                              backgroundColor: '#FFA500'
+                            }}>
+                              🔄 Transfer
+                            </span>
+                          )}
+                          {seg.type === 'walk' && (
+                            <span className="segment-badge" style={{
+                              backgroundColor: '#0066cc'
+                            }}>
+                              🚶 Walk
+                            </span>
+                          )}
+                        </div>
+                        <div className="segment-time">
+                          {formatDuration(seg.time_minutes)}
+                        </div>
+                      </div>
+
+                      <div className="segment-station">
+                        <span className="segment-station-name">{seg.from_station_name}</span>
+                        {seg.departure_time && (
+                          <span className="segment-station-time">
+                            {formatTime(seg.departure_time)}
                           </span>
                         )}
-                        {seg.type === 'transfer' && '🔄 Transfer'}
-                        {seg.type === 'walk' && '🚶 Walk'}
                       </div>
-                      <div style={{ fontSize: '0.85rem', color: '#666' }}>
-                        {formatDuration(seg.time_minutes)}
-                      </div>
-                    </div>
 
-                    <div style={{ fontSize: '0.9rem', marginBottom: '0.25rem' }}>
-                      <strong>{seg.from_station_name}</strong>
-                      {seg.departure_time && (
-                        <span style={{ color: '#666', marginLeft: '8px', fontSize: '0.85rem' }}>
-                          {formatTime(seg.departure_time)}
-                        </span>
+                      <div className="segment-station">
+                        <span className="segment-station-name">{seg.to_station_name}</span>
+                        {seg.arrival_time && (
+                          <span className="segment-station-time">
+                            {formatTime(seg.arrival_time)}
+                          </span>
+                        )}
+                      </div>
+
+                      {seg.status && seg.status !== 'Scheduled' && (
+                        <div className={`segment-status ${seg.status === 'Delayed' ? 'segment-status-delayed' : 'segment-status-normal'}`}>
+                          {seg.status}
+                        </div>
                       )}
                     </div>
-
-                    <div style={{ fontSize: '0.9rem' }}>
-                      <strong>{seg.to_station_name}</strong>
-                      {seg.arrival_time && (
-                        <span style={{ color: '#666', marginLeft: '8px', fontSize: '0.85rem' }}>
-                          {formatTime(seg.arrival_time)}
-                        </span>
-                      )}
-                    </div>
-
-                    {seg.status && seg.status !== 'Scheduled' && (
-                      <div style={{
-                        fontSize: '0.8rem',
-                        color: seg.status === 'Delayed' ? '#d32f2f' : '#666',
-                        marginTop: '0.25rem',
-                        fontStyle: 'italic'
-                      }}>
-                        {seg.status}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {result && !sameLineRoute?.is_same_line && !routeResult && (
-          <div style={{
-            backgroundColor: 'white',
-            padding: '1rem',
-            borderRadius: '8px',
-            border: '1px solid #ddd'
-          }}>
-            <h2 style={{ marginTop: 0, fontSize: '1.25rem', color: '#0066cc' }}>Walking Route</h2>
-
-            <div style={{ marginBottom: '0.75rem' }}>
-              <strong>{result.station_1.name}</strong> → <strong>{result.station_2.name}</strong>
-            </div>
-
-            <div style={{
-              backgroundColor: '#e7f3ff',
-              padding: '0.75rem',
-              borderRadius: '4px'
-            }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0066cc' }}>
-                {formatDuration(result.duration_minutes)}
-              </div>
-              <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
-                {result.distance_km} km
+                  );
+                })}
               </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {/* Walking Route Result */}
+          {result && !sameLineRoute?.is_same_line && !routeResult && (
+            <div className="result-card">
+              <h2 className="result-card-title text-accent">🚶 Walking Route</h2>
+
+              <p className="result-card-subtitle">
+                <strong>{result.station_1.name}</strong> → <strong>{result.station_2.name}</strong>
+              </p>
+
+              <div className="time-display">
+                <div className="time-value">
+                  {formatDuration(result.duration_minutes)}
+                </div>
+                <div className="time-meta">
+                  📏 {result.distance_km} km
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Map */}
-      <div style={{ flex: 1, position: 'relative' }}>
+      <div className="map-container">
         <MapContainer
           center={[42.3601, -71.0589]} // Boston
           zoom={13}
@@ -997,7 +937,7 @@ function App() {
           ))}
 
           {/* Same-line route line */}
-          {sameLineRoute && sameLineRoute.is_same_line && (
+          {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (
             <Polyline
               positions={
                 sameLineRoute.geometry_coordinates && sameLineRoute.geometry_coordinates.length > 0
