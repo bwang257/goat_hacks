@@ -77,20 +77,26 @@ LINE_TRANSFER_ADJUSTMENTS = {
 def calculate_transfer_time(
     station_id: str,
     from_line: Optional[str] = None,
-    to_line: Optional[str] = None
+    to_line: Optional[str] = None,
+    walking_speed_kmh: float = 5.0
 ) -> int:
     """
-    Calculate the required buffer time for a transfer at a specific station.
+    Calculate the required buffer time for a transfer at a specific station,
+    adjusted for walking speed.
+
+    Base buffers assume 5.0 km/h walking speed. Slower speeds increase buffer,
+    faster speeds decrease it (with a minimum floor).
 
     Args:
         station_id: MBTA station ID (e.g., "place-pktrm")
         from_line: Line transferring from (e.g., "Red Line")
         to_line: Line transferring to (e.g., "Green Line")
+        walking_speed_kmh: User's walking speed in km/h (default 5.0)
 
     Returns:
         Required buffer time in seconds
     """
-    # Get base station buffer
+    # Get base station buffer (calibrated for 5.0 km/h)
     base_buffer = STATION_BUFFERS.get(station_id, STATION_BUFFERS["default"])
 
     # Add line-specific adjustment if applicable
@@ -99,9 +105,27 @@ def calculate_transfer_time(
         line_pair = (from_line, to_line)
         line_adjustment = LINE_TRANSFER_ADJUSTMENTS.get(line_pair, 0)
 
-    total_buffer = base_buffer + line_adjustment
+    base_total = base_buffer + line_adjustment
 
-    return total_buffer
+    # Calculate walking-speed adjustment
+    # Base speed is 5.0 km/h - scale buffer proportionally
+    BASE_WALKING_SPEED = 5.0
+    if walking_speed_kmh > 0:
+        speed_factor = BASE_WALKING_SPEED / walking_speed_kmh
+    else:
+        speed_factor = 1.0
+
+    # Apply speed factor to the "walking portion" of buffer
+    # Assume ~60% of buffer is walking time, 40% is fixed (waiting, orientation)
+    WALKING_PORTION = 0.6
+    walking_time = base_total * WALKING_PORTION
+    fixed_time = base_total * (1 - WALKING_PORTION)
+
+    adjusted_walking_time = walking_time * speed_factor
+    total_buffer = int(fixed_time + adjusted_walking_time)
+
+    # Minimum buffer floor (never less than 30 seconds)
+    return max(total_buffer, 30)
 
 
 def rate_transfer(slack_time_seconds: float) -> TransferRating:
@@ -131,7 +155,8 @@ def get_transfer_details(
     to_line: Optional[str],
     arrival_time_seconds: float,
     departure_time_seconds: float,
-    walking_time_seconds: float = 0
+    walking_time_seconds: float = 0,
+    walking_speed_kmh: float = 5.0
 ) -> dict:
     """
     Get comprehensive transfer analysis including rating and timing breakdown.
@@ -143,6 +168,7 @@ def get_transfer_details(
         arrival_time_seconds: When arriving at transfer station (epoch seconds)
         departure_time_seconds: When next train departs (epoch seconds)
         walking_time_seconds: Time to walk between platforms
+        walking_speed_kmh: User's walking speed in km/h (default 5.0)
 
     Returns:
         Dictionary with transfer analysis:
@@ -155,7 +181,7 @@ def get_transfer_details(
             "rating": "risky"
         }
     """
-    buffer_seconds = calculate_transfer_time(station_id, from_line, to_line)
+    buffer_seconds = calculate_transfer_time(station_id, from_line, to_line, walking_speed_kmh)
     total_required = buffer_seconds + walking_time_seconds
     available_time = departure_time_seconds - arrival_time_seconds
     slack_time = available_time - total_required

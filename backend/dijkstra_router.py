@@ -262,11 +262,12 @@ class DijkstraRouter:
                 transfer_buffer_seconds = 0
                 if is_transfer:
                     num_transfers += 1
-                    # Calculate dynamic transfer buffer based on station and lines
+                    # Calculate dynamic transfer buffer based on station, lines, and walking speed
                     transfer_buffer_seconds = calculate_transfer_time(
                         station_id=from_station,
                         from_line=current_line,
-                        to_line=line_name
+                        to_line=line_name,
+                        walking_speed_kmh=walking_speed_kmh
                     )
                     current_time += timedelta(seconds=transfer_buffer_seconds)
                     if debug:

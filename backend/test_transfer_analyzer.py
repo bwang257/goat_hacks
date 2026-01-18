@@ -100,15 +100,15 @@ class TestGetTransferDetails:
             from_line="Red Line",
             to_line="Green Line",
             arrival_time_seconds=1000,
-            departure_time_seconds=1600,  # 10 minutes later
+            departure_time_seconds=1610,  # Just over 10 minutes later
             walking_time_seconds=90
         )
 
         assert details["buffer_seconds"] == 210  # 180 + 30 line adjustment
         assert details["walking_time_seconds"] == 90
         assert details["total_required_seconds"] == 300  # 210 + 90
-        assert details["available_seconds"] == 600  # 1600 - 1000
-        assert details["slack_time_seconds"] == 300  # 600 - 300
+        assert details["available_seconds"] == 610  # 1610 - 1000
+        assert details["slack_time_seconds"] == 310  # 610 - 300 (> 300 = likely)
         assert details["rating"] == "likely"
 
     def test_tight_transfer(self):
@@ -162,6 +162,84 @@ class TestGetTransferDetails:
         assert details["total_required_seconds"] == 120  # just buffer
         assert details["slack_time_seconds"] == 180  # 300 - 120 = RISKY
         assert details["rating"] == "risky"
+
+
+class TestWalkingSpeedAdjustment:
+    """Test walking speed affects transfer buffer calculations"""
+
+    def test_slow_walker_gets_more_buffer(self):
+        """Slow walker (3 km/h) should get more buffer time than normal"""
+        normal = calculate_transfer_time("place-pktrm", "Red Line", "Green Line", 5.0)
+        slow = calculate_transfer_time("place-pktrm", "Red Line", "Green Line", 3.0)
+        assert slow > normal
+        # With 60% walking portion: slow should be significantly more
+        assert slow >= normal * 1.2
+
+    def test_fast_walker_gets_less_buffer(self):
+        """Fast walker (6 km/h) should get less buffer time"""
+        normal = calculate_transfer_time("place-pktrm", "Red Line", "Green Line", 5.0)
+        fast = calculate_transfer_time("place-pktrm", "Red Line", "Green Line", 6.0)
+        assert fast < normal
+
+    def test_default_speed_unchanged(self):
+        """Default 5 km/h should return same as original base calculation"""
+        # Base: 180 (station) + 30 (line) = 210
+        # With speed factor 1.0: 40% fixed (84) + 60% walking (126) = 210
+        buffer = calculate_transfer_time("place-pktrm", "Red Line", "Green Line", 5.0)
+        assert buffer == 210
+
+    def test_minimum_buffer_floor(self):
+        """Very fast walker shouldn't get unreasonably low buffer"""
+        buffer = calculate_transfer_time("place-unknown", walking_speed_kmh=10.0)
+        assert buffer >= 30  # Minimum floor
+
+    def test_slow_walker_rating_changes(self):
+        """Slow walker should have less slack time for same scenario"""
+        # Same scenario, but slow walker needs more time
+        normal_details = get_transfer_details(
+            station_id="place-pktrm",
+            from_line="Red Line",
+            to_line="Green Line",
+            arrival_time_seconds=1000,
+            departure_time_seconds=1400,  # 6:40 available
+            walking_time_seconds=0,
+            walking_speed_kmh=5.0
+        )
+        slow_details = get_transfer_details(
+            station_id="place-pktrm",
+            from_line="Red Line",
+            to_line="Green Line",
+            arrival_time_seconds=1000,
+            departure_time_seconds=1400,
+            walking_time_seconds=0,
+            walking_speed_kmh=3.0
+        )
+        # Slow walker has less slack time because buffer is higher
+        assert slow_details["slack_time_seconds"] < normal_details["slack_time_seconds"]
+        assert slow_details["buffer_seconds"] > normal_details["buffer_seconds"]
+
+    def test_very_slow_walker_unlikely_transfer(self):
+        """Very slow walker (2 km/h) should see transfer become unlikely"""
+        # With normal speed this might be risky, but slow speed makes it unlikely
+        slow_details = get_transfer_details(
+            station_id="place-pktrm",
+            from_line="Red Line",
+            to_line="Green Line",
+            arrival_time_seconds=1000,
+            departure_time_seconds=1350,  # 5:50 available
+            walking_time_seconds=0,
+            walking_speed_kmh=2.0  # Very slow
+        )
+        # With 2 km/h, buffer should be much higher
+        # Base 210 * (0.4 fixed + 0.6 * 2.5 factor) = 84 + 315 = 399
+        assert slow_details["buffer_seconds"] > 350
+        assert slow_details["rating"] == "unlikely"
+
+    def test_zero_walking_speed_uses_default_factor(self):
+        """Zero walking speed should use factor of 1.0 (no division by zero)"""
+        buffer = calculate_transfer_time("place-pktrm", "Red Line", "Green Line", 0)
+        # Should fall back to factor 1.0
+        assert buffer == 210
 
 
 class TestStationBuffers:
