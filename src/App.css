@@ -1201,11 +1201,60 @@ body {
 .grouped-segment-header {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs);
+  gap: 4px;
   cursor: pointer;
   user-select: none;
 }
 
+/* New row-based layout for segments */
+.segment-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.segment-row-top {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.segment-row-route {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--gray-900);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.segment-row-time {
+  font-size: 0.8rem;
+  color: var(--gray-600);
+}
+
+/* Line badge - full width, no truncation */
+.segment-badge-line {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--white);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.walk-badge-line {
+  background-color: #0066cc;
+}
+
+.segment-stops-expand {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+/* Legacy classes kept for compatibility */
 .grouped-segment-line {
   display: flex;
   align-items: flex-start;

@@ -108,6 +108,12 @@ class DijkstraRouter:
                 continue
             visited.add(current.station_id)
 
+            # Get the current line we're on (from the last edge in path)
+            current_line = None
+            if current.path:
+                last_edge = current.path[-1]
+                current_line = last_edge.get("line") or last_edge.get("route_id")
+
             # Explore all neighboring edges
             for edge in self.adjacency.get(current.station_id, []):
                 next_station = edge["to"]
@@ -125,6 +131,18 @@ class DijkstraRouter:
 
                 # Calculate new total time
                 new_time = current.total_time + edge_time
+
+                # Add a small penalty for unnecessary line changes
+                # This ensures we prefer staying on the same line when costs are equal
+                edge_line = edge.get("line") or edge.get("route_id")
+                if current_line and edge_line and current_line != edge_line:
+                    # Check if both are train edges (not walk)
+                    edge_type = edge.get("type", "train")
+                    last_edge_type = current.path[-1].get("type", "train") if current.path else "train"
+                    if edge_type == "train" and last_edge_type == "train":
+                        # Add 1 second penalty for line change - just enough to break ties
+                        # This won't affect routes where changing lines is actually faster
+                        new_time += 1
 
                 # Create new path
                 new_path = current.path + [edge]

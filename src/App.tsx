@@ -501,8 +501,12 @@ function VoiceInputButton({
 
       setTranscript(finalTranscript || interimTranscript);
 
-      // If we have a final transcript, parse it
+      // If we have a final transcript, parse it and stop listening
       if (finalTranscript) {
+        // Explicitly stop recognition to ensure mic turns off
+        if (recognitionRef.current) {
+          recognitionRef.current.stop();
+        }
         parseAndFindStations(finalTranscript);
       }
     };
@@ -931,24 +935,27 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle, transferStationDat
           aria-expanded={isExpanded}
           aria-label={`${cleanLine} line from ${group.fromStation} to ${group.toStation}, ${group.totalStops} ${group.totalStops === 1 ? 'stop' : 'stops'}. Press Enter to ${isExpanded ? 'collapse' : 'expand'} details.`}
         >
-          <div className="grouped-segment-line">
-            <span className="segment-badge" style={{ backgroundColor: lineColor }}>
-              {cleanLine}
+          {/* Row 1: Line badge + stops */}
+          <div className="segment-row segment-row-top">
+            <span className="segment-badge-line" style={{ backgroundColor: lineColor }}>
+              {group.line || cleanLine}
             </span>
-            <span className="grouped-segment-route">
-              {group.fromStation} → {group.toStation}
-            </span>
+            <div className="segment-stops-expand">
+              <span className="grouped-segment-stops">{group.totalStops} {group.totalStops === 1 ? 'stop' : 'stops'}</span>
+              <span className="expand-icon" aria-hidden="true">{isExpanded ? '▼' : '▶'}</span>
+            </div>
           </div>
-          <div className="grouped-segment-info">
-            <span className="grouped-segment-stops">{group.totalStops} {group.totalStops === 1 ? 'stop' : 'stops'}</span>
-            <span className="expand-icon" aria-hidden="true">{isExpanded ? '▼' : '▶'}</span>
+          {/* Row 2: From → To */}
+          <div className="segment-row segment-row-route">
+            {group.fromStation} → {group.toStation}
           </div>
+          {/* Row 3: Times */}
+          {group.departureTime && (
+            <div className="segment-row segment-row-time">
+              {formatTime(group.departureTime)} → {group.arrivalTime ? formatTime(group.arrivalTime) : '—'}
+            </div>
+          )}
         </div>
-        {group.departureTime && (
-          <div className="grouped-segment-time">
-            {formatTime(group.departureTime)} → {group.arrivalTime ? formatTime(group.arrivalTime) : '—'}
-          </div>
-        )}
         {isExpanded && group.intermediateStops && group.intermediateStops.length > 0 && (
           <div className="intermediate-stops">
             {group.intermediateStops.map((stop, idx) => (
@@ -1021,18 +1028,23 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle, transferStationDat
     return (
       <div className="grouped-segment walk-segment" role="listitem">
         <div className="grouped-segment-header">
-          <span className="segment-badge walk-badge" style={{ backgroundColor: '#0066cc' }}>
-            Walk
-          </span>
-          <span className="grouped-segment-route">
+          {/* Row 1: Walk badge */}
+          <div className="segment-row segment-row-top">
+            <span className="segment-badge-line walk-badge-line">
+              Walk
+            </span>
+          </div>
+          {/* Row 2: From → To */}
+          <div className="segment-row segment-row-route">
             {group.fromStation} → {group.toStation}
-          </span>
-        </div>
-        <div className="grouped-segment-time">
-          {formatDuration(group.segments[0]?.time_minutes || 0)}
-          {distanceDisplay && (
-            <span className="walk-distance"> ({distanceDisplay})</span>
-          )}
+          </div>
+          {/* Row 3: Time and distance */}
+          <div className="segment-row segment-row-time">
+            {formatDuration(group.segments[0]?.time_minutes || 0)}
+            {distanceDisplay && (
+              <span className="walk-distance"> ({distanceDisplay})</span>
+            )}
+          </div>
         </div>
       </div>
     );
