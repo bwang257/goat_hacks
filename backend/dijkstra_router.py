@@ -149,7 +149,7 @@ class DijkstraRouter:
 
         Args:
             path: List of edges from Dijkstra
-            departure_time: When to start the journey
+            departure_time: When to start the journey (request time = "now")
             mbta_client: MBTA API client for real-time data
             debug: Print debug information
 
@@ -164,6 +164,8 @@ class DijkstraRouter:
             print(f"Departure time: {departure_time.strftime('%I:%M %p')}")
             print()
 
+        # Store request time separately - this is when user clicked, used for total_time calculation
+        request_time = departure_time
         current_time = departure_time
         enriched_segments = []
         total_distance = 0
@@ -370,11 +372,13 @@ class DijkstraRouter:
             enriched_segments.append(segment)
 
         # Build final route
-        total_time = (current_time - departure_time).total_seconds()
+        # Calculate total_time from request_time (when user clicked) to arrival
+        # This includes wait time for first train, not just travel time
+        total_time = (current_time - request_time).total_seconds()
 
         if debug:
             print()
-            print(f"Total journey time: {total_time/60:.1f} minutes")
+            print(f"Total journey time (from now): {total_time/60:.1f} minutes")
             print(f"Total transfers: {num_transfers}")
             print(f"Arrival time: {current_time.strftime('%I:%M %p')}")
 

@@ -958,18 +958,19 @@ async def find_route(
     alternative_routes = []
     if has_risky_transfers and use_realtime and mbta_client:
         try:
-            # Get alternative routes with safer transfers
+            # Get 1 alternative route with safer transfers (only if primary route is risky)
             alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
                 primary_route=route,
                 start_station_id=station_id_1,
                 end_station_id=station_id_2,
                 mbta_client=mbta_client,
-                max_alternatives=3,
+                max_alternatives=1,  # Only return 1 safer alternative
                 debug=False
             )
-            alternative_routes = alt_routes
+            alternative_routes = alt_routes[:1]  # Ensure only 1 alternative is included
         except Exception as e:
             print(f"Error finding alternative routes: {e}")
+    # If primary route is safe (no risky transfers), alternatives array remains empty
 
     segments = []
     for seg in route.segments:
@@ -1067,7 +1068,7 @@ async def find_route(
             alternatives=[]
         )
         alternatives_response.append(alt_response)
-
+    
     return RouteResponse(
         segments=segments,
         total_time_seconds=route.total_time_seconds,
@@ -1080,6 +1081,156 @@ async def find_route(
         has_risky_transfers=has_risky_transfers,
         alternatives=alternatives_response
     )
+
+@app.post("/api/route/alternatives", response_model=List[RouteResponse])
+async def get_additional_alternatives(
+    request: RouteRequest
+):
+    """
+    Fetch additional alternative routes (2 more routes) when user clicks "Show More Options".
+    Uses real-time MBTA API to find next available routes.
+    """
+    station_id_1 = request.station_id_1
+    station_id_2 = request.station_id_2
+    prefer_fewer_transfers = request.prefer_fewer_transfers
+    departure_time = request.departure_time
+    use_realtime = request.use_realtime
+    
+    if not TRANSIT_GRAPH:
+        raise HTTPException(
+            status_code=503,
+            detail="Transit graph not loaded"
+        )
+    
+    # Parse departure time
+    dep_time = None
+    if departure_time:
+        try:
+            dep_time = datetime.fromisoformat(departure_time.replace('Z', '+00:00'))
+        except:
+            raise HTTPException(status_code=400, detail="Invalid timestamp format")
+    else:
+        dep_time = datetime.now(timezone.utc)
+    
+    mbta_client = await get_mbta_client()
+    
+    if not DIJKSTRA_ROUTER:
+        raise HTTPException(status_code=503, detail="Dijkstra router not initialized")
+    
+    # First, get the primary route to use as reference
+    primary_route = None
+    try:
+        primary_route = await DIJKSTRA_ROUTER.find_route(
+            start_station_id=station_id_1,
+            end_station_id=station_id_2,
+            departure_time=dep_time,
+            mbta_client=mbta_client if use_realtime else None,
+            debug=False
+        )
+    except Exception as e:
+        print(f"Error getting primary route: {e}")
+        raise HTTPException(status_code=500, detail=f"Error finding routes: {str(e)}")
+    
+    if not primary_route:
+        raise HTTPException(status_code=404, detail="No route found")
+    
+    # Fetch additional alternatives (2 more routes)
+    additional_alternatives = []
+    if use_realtime and mbta_client:
+        try:
+            alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
+                primary_route=primary_route,
+                start_station_id=station_id_1,
+                end_station_id=station_id_2,
+                mbta_client=mbta_client,
+                max_alternatives=5,  # Fetch more to ensure we get 2 good alternatives
+                debug=False
+            )
+            # Skip the first one (likely already shown) and take next 2
+            additional_alternatives = alt_routes[1:3] if len(alt_routes) > 1 else alt_routes[:2]
+        except Exception as e:
+            print(f"Error finding additional alternatives: {e}")
+    
+    # Convert to response format
+    alternatives_response = []
+    for alt_route in additional_alternatives:
+        alt_segments = []
+        for seg in alt_route.segments:
+            alt_seg = RouteSegmentResponse(
+                from_station_id=seg.from_station,
+                from_station_name=TRANSIT_GRAPH.get_station_name(seg.from_station) or "Unknown Station",
+                to_station_id=seg.to_station,
+                to_station_name=TRANSIT_GRAPH.get_station_name(seg.to_station) or "Unknown Station",
+                type=seg.type,
+                line=seg.line,
+                route_id=seg.route_id,
+                time_seconds=seg.time_seconds,
+                time_minutes=round(seg.time_seconds / 60, 1),
+                distance_meters=seg.distance_meters,
+                departure_time=seg.departure_time.isoformat() if seg.departure_time else None,
+                arrival_time=seg.arrival_time.isoformat() if seg.arrival_time else None,
+                status=seg.status,
+                geometry_coordinates=None,
+                transfer_rating=seg.transfer_rating,
+                slack_time_seconds=seg.slack_time_seconds,
+                buffer_seconds=seg.buffer_seconds
+            )
+            
+            # Calculate geometry for train segments
+            if alt_seg.type == "train" and alt_seg.route_id:
+                try:
+                    idx_map = STATION_SHAPE_INDICES.get(alt_seg.route_id, {})
+                    start_mappings = idx_map.get(alt_seg.from_station_id, [])
+                    end_mappings = idx_map.get(alt_seg.to_station_id, [])
+                    
+                    target_shape = None
+                    s_idx = None
+                    e_idx = None
+                    
+                    for (s_shape_idx, s_pt_idx) in start_mappings:
+                        for (e_shape_idx, e_pt_idx) in end_mappings:
+                            if s_shape_idx == e_shape_idx:
+                                all_shapes = ROUTE_SHAPES.get(alt_seg.route_id, [])
+                                if s_shape_idx < len(all_shapes):
+                                    target_shape = all_shapes[s_shape_idx]
+                                    s_idx = s_pt_idx
+                                    e_idx = e_pt_idx
+                                break
+                        if target_shape:
+                            break
+                    
+                    if target_shape:
+                        if s_idx <= e_idx:
+                            alt_seg.geometry_coordinates = target_shape[s_idx:e_idx+1]
+                        else:
+                            alt_seg.geometry_coordinates = target_shape[e_idx:s_idx+1][::-1]
+                except Exception as e:
+                    print(f"Error calculating geometry for alternative segment: {e}")
+            
+            alt_segments.append(alt_seg)
+        
+        # Check if this alternative has risky transfers
+        has_risky = any(
+            seg.transfer_rating in ["risky", "unlikely"]
+            for seg in alt_route.segments
+            if seg.transfer_rating is not None
+        )
+        
+        alt_response = RouteResponse(
+            segments=alt_segments,
+            total_time_seconds=alt_route.total_time_seconds,
+            total_time_minutes=round(alt_route.total_time_seconds / 60, 1),
+            total_distance_meters=alt_route.total_distance_meters,
+            total_distance_km=round(alt_route.total_distance_meters / 1000, 2),
+            num_transfers=alt_route.num_transfers,
+            departure_time=alt_route.departure_time.isoformat() if alt_route.departure_time else None,
+            arrival_time=alt_route.arrival_time.isoformat() if alt_route.arrival_time else None,
+            has_risky_transfers=has_risky,
+            alternatives=[]
+        )
+        alternatives_response.append(alt_response)
+    
+    return alternatives_response
 
 @app.get("/api/route/realtime", response_model=RouteResponse)
 async def find_realtime_route(

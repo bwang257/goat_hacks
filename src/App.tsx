@@ -250,21 +250,21 @@ const endIcon = new L.Icon({
 function createTMarker(lines: string[]): L.DivIcon {
   const getLineColor = (line: string) => {
     const cleanLine = line.replace(' Line', '').trim();
-    const lineColors: { [key: string]: string } = {
-      'Red': '#DA291C',
-      'Orange': '#ED8B00',
-      'Blue': '#003DA5',
-      'Green': '#00843D',
-      'Green-B': '#00843D',
-      'Green-C': '#00843D',
-      'Green-D': '#00843D',
-      'Green-E': '#00843D',
+  const lineColors: { [key: string]: string } = {
+    'Red': '#DA291C',
+    'Orange': '#ED8B00',
+    'Blue': '#003DA5',
+    'Green': '#00843D',
+    'Green-B': '#00843D',
+    'Green-C': '#00843D',
+    'Green-D': '#00843D',
+    'Green-E': '#00843D',
       'B': '#00843D',
       'C': '#00843D',
       'D': '#00843D',
       'E': '#00843D',
-      'Silver': '#7C878E',
-      'Mattapan': '#DA291C'
+    'Silver': '#7C878E',
+    'Mattapan': '#DA291C'
     };
     // Color all commuter rail lines purple
     const commuterRailLines = [
@@ -283,7 +283,7 @@ function createTMarker(lines: string[]): L.DivIcon {
   let primaryColor = '#000000';
   for (const line of lines) {
     primaryColor = getLineColor(line);
-    break;
+      break;
   }
 
   // Create multi-line display with unique colors only
@@ -372,11 +372,11 @@ function formatDuration(minutes: number): string {
 
 
 
-function StationSearch({
-  label,
-  onSelect,
-  selectedStation
-}: {
+function StationSearch({ 
+  label, 
+  onSelect, 
+  selectedStation 
+}: { 
   label: string;
   onSelect: (station: Station) => void;
   selectedStation: Station | null;
@@ -421,7 +421,7 @@ function StationSearch({
         placeholder="Search for a station..."
         className="station-search-input"
       />
-
+      
       {showResults && results.length > 0 && (
         <ul className="search-results">
           {results.map(station => (
@@ -442,10 +442,10 @@ function StationSearch({
   );
 }
 
-function MapClickHandler({
+function MapClickHandler({ 
   onMapClick,
-  selectingStation
-}: {
+  selectingStation 
+}: { 
   onMapClick: (lat: number, lng: number) => void;
   selectingStation: 'start' | 'end' | null;
 }) {
@@ -460,15 +460,15 @@ function MapClickHandler({
 }
 
 // Component to fit map bounds to show both stations
-function MapBoundsUpdater({
-  startStation,
-  endStation
-}: {
+function MapBoundsUpdater({ 
+  startStation, 
+  endStation 
+}: { 
   startStation: Station | null;
   endStation: Station | null;
 }) {
   const map = useMap();
-
+  
   useEffect(() => {
     if (startStation && endStation) {
       const bounds = L.latLngBounds(
@@ -478,7 +478,7 @@ function MapBoundsUpdater({
       map.fitBounds(bounds, { padding: [50, 50] });
     }
   }, [startStation, endStation, map]);
-
+  
   return null;
 }
 
@@ -600,6 +600,8 @@ function App() {
   const [routeShapes, setRouteShapes] = useState<{ [key: string]: { id: string; coordinates: [number, number][]; }[] }>({});
   const [walkingSpeed, setWalkingSpeed] = useState<number>(5.0); // km/h
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
+  const [additionalAlternatives, setAdditionalAlternatives] = useState<RouteResult[]>([]);
+  const [loadingMoreAlternatives, setLoadingMoreAlternatives] = useState(false);
 
   // Helper function to get line color
   const getLineColor = (lineName: string) => {
@@ -646,7 +648,7 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/api/stations/nearest?lat=${lat}&lng=${lng}&limit=1`);
       const nearestStations = await response.json();
-
+      
       if (nearestStations.length > 0) {
         const nearest = nearestStations[0];
         if (selectingStation === 'start') {
@@ -655,7 +657,7 @@ function App() {
           setEndStation(nearest);
         }
       }
-
+      
       setSelectingStation(null);
     } catch (err) {
       console.error('Error finding nearest station:', err);
@@ -673,6 +675,7 @@ function App() {
     setSameLineRoute(null);
     setRouteResult(null);
     setRouteGeometry([]);
+    setAdditionalAlternatives([]);
 
     try {
       // First, try to get a comprehensive route using the new API
@@ -774,10 +777,10 @@ function App() {
         const sameLineResponse = await fetch(
           `${API_BASE}/api/realtime/same-line?station_id_1=${startStation.id}&station_id_2=${endStation.id}&num_trains=3`
         );
-
+        
         if (sameLineResponse.ok) {
           const sameLineData = await sameLineResponse.json();
-
+          
           if (sameLineData.is_same_line) {
             setSameLineRoute(sameLineData);
             setLoading(false);
@@ -810,7 +813,7 @@ function App() {
       const routeResponse = await fetch(
         `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${startStation.longitude},${startStation.latitude};${endStation.longitude},${endStation.latitude}?overview=full&geometries=geojson`
       );
-
+      
       if (routeResponse.ok) {
         const routeData = await routeResponse.json();
         if (routeData.routes && routeData.routes[0]) {
@@ -838,10 +841,82 @@ function App() {
     setRouteResult(null);
     setRouteGeometry([]);
     setRouteSegments([]);
+    setAdditionalAlternatives([]);
+  };
+
+  const fetchMoreAlternatives = async () => {
+    if (!startStation || !endStation || !routeResult || loadingMoreAlternatives) {
+      return;
+    }
+
+    setLoadingMoreAlternatives(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/route/alternatives`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          station_id_1: startStation.id,
+          station_id_2: endStation.id,
+          prefer_fewer_transfers: true,
+          use_realtime: true
+        })
+      });
+
+      if (response.ok) {
+        const additionalRoutes: RouteResult[] = await response.json();
+        setAdditionalAlternatives(additionalRoutes);
+      } else {
+        console.error('Error fetching additional alternatives:', response.status);
+      }
+    } catch (err) {
+      console.error('Error fetching additional alternatives:', err);
+    } finally {
+      setLoadingMoreAlternatives(false);
+    }
   };
 
   return (
     <div className="app-container">
+      {/* Loading Overlay */}
+      {loading && (
+      <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          flexDirection: 'column',
+          gap: '1rem'
+        }}>
+          <div style={{
+            width: '50px',
+            height: '50px',
+            border: '5px solid #f3f3f3',
+            borderTop: '5px solid #0066cc',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }}></div>
+          <div style={{
+            color: 'white',
+            fontSize: '1.2rem',
+            fontWeight: 'bold'
+          }}>
+            Finding best route...
+          </div>
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      )}
+
       {/* Sidebar */}
       <div className="sidebar">
         {/* Show route view when route is available */}
@@ -875,39 +950,39 @@ function App() {
                 <div>
                   <h1 className="header-title">MBTA Route Finder</h1>
                   <p className="header-subtitle">
-                    Select two stations to find the best route between them
-                  </p>
+          Select two stations to find the best route between them
+        </p>
                 </div>
               </div>
             </div>
 
-            {/* Start Station */}
-            <StationSearch
-              label="From Station"
-              onSelect={setStartStation}
-              selectedStation={startStation}
-            />
+        {/* Start Station */}
+        <StationSearch
+          label="From Station"
+          onSelect={setStartStation}
+          selectedStation={startStation}
+        />
 
-            {/* End Station */}
-            <StationSearch
-              label="To Station"
-              onSelect={setEndStation}
-              selectedStation={endStation}
-            />
+        {/* End Station */}
+        <StationSearch
+          label="To Station"
+          onSelect={setEndStation}
+          selectedStation={endStation}
+        />
 
-            {/* Walking Speed Control */}
+        {/* Walking Speed Control */}
             <div className="control-group">
               <label className="control-label" htmlFor="walking-speed">
                 Walking Speed: {walkingSpeed.toFixed(1)} km/h
-              </label>
-              <input
+          </label>
+          <input
                 id="walking-speed"
-                type="range"
-                min="2"
-                max="8"
-                step="0.5"
-                value={walkingSpeed}
-                onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
+            type="range"
+            min="2"
+            max="8"
+            step="0.5"
+            value={walkingSpeed}
+            onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
                 className="range-slider"
                 aria-label="Walking speed"
                 aria-valuemin={2}
@@ -915,10 +990,10 @@ function App() {
                 aria-valuenow={walkingSpeed}
               />
               <div className="range-labels">
-                <span>Slow (2 km/h)</span>
-                <span>Fast (8 km/h)</span>
-              </div>
-            </div>
+            <span>Slow (2 km/h)</span>
+            <span>Fast (8 km/h)</span>
+          </div>
+        </div>
           </>
         )}
 
@@ -932,11 +1007,11 @@ function App() {
               <h2 className="result-card-title" style={{
                 color: `#${sameLineRoute.line_color}`
               }}>
-                {sameLineRoute.line_name}
-              </h2>
-
+              {sameLineRoute.line_name}
+            </h2>
+            
               <p className="result-card-subtitle">
-                <strong>{sameLineRoute.from_station_name}</strong> → <strong>{sameLineRoute.to_station_name}</strong>
+              <strong>{sameLineRoute.from_station_name}</strong> → <strong>{sameLineRoute.to_station_name}</strong>
               </p>
 
               <div className="time-display" style={{
@@ -947,40 +1022,40 @@ function App() {
                   color: `#${sameLineRoute.line_color}`
                 }}>
                   {formatDuration(sameLineRoute.scheduled_time_minutes || 0)}
-                </div>
               </div>
+            </div>
 
               <h3 style={{ fontSize: '0.95rem', marginBottom: 'var(--spacing-md)', fontWeight: 600, color: 'var(--gray-700)' }}>Next Trains</h3>
               <div className="same-line-trains" role="list" aria-label="Upcoming trains">
-                {sameLineRoute.next_trains && sameLineRoute.next_trains.length > 0 ? (
-                  sameLineRoute.next_trains.map((train, idx) => (
-                    <div
-                      key={idx}
+              {sameLineRoute.next_trains && sameLineRoute.next_trains.length > 0 ? (
+                sameLineRoute.next_trains.map((train, idx) => (
+                  <div
+                    key={idx}
                       className="train-item"
                       role="listitem"
-                      style={{
+                    style={{
                         borderLeftColor: `#${sameLineRoute.line_color}`
                       }}
                     >
                       <div className="train-countdown" style={{
                         color: `#${sameLineRoute.line_color}`
                       }}>
-                        Departs in {train.countdown_text}
-                      </div>
+                      Departs in {train.countdown_text}
+                    </div>
                       <div className="train-arrival">
                         Arrive: {formatTime(train.arrival_time)}
-                      </div>
+                    </div>
                       <div className="train-trip-time">
                         Trip time: {formatDuration(train.total_trip_minutes)}
-                      </div>
                     </div>
-                  ))
-                ) : (
+                  </div>
+                ))
+              ) : (
                   <div style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }} role="status">No upcoming trains</div>
-                )}
-              </div>
+              )}
             </div>
-          )}
+          </div>
+        )}
 
           {/* Comprehensive Route Result - Apple Maps Style */}
           {routeResult && !sameLineRoute?.is_same_line && (
@@ -998,24 +1073,35 @@ function App() {
                 <div className="route-option-header">
                   <div className="route-option-title">
                     <span className="route-option-badge">Earliest</span>
-                    {routeResult.has_risky_transfers && (
-                      <span className={`transfer-rating-badge transfer-rating-${
-                        routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? 'unlikely' :
-                        routeResult.segments.find(s => s.transfer_rating === 'risky') ? 'risky' : 'likely'
-                      }`} aria-label={`Transfer rating: ${
-                        routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? 'UNLIKELY' :
-                        routeResult.segments.find(s => s.transfer_rating === 'risky') ? 'RISKY' : 'LIKELY'
-                      }`}>
-                        {routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? 'UNLIKELY' :
-                         routeResult.segments.find(s => s.transfer_rating === 'risky') ? 'RISKY' : 'LIKELY'}
-                      </span>
-                    )}
+                    {(() => {
+                      const transferSegments = routeResult.segments.filter(s => s.transfer_rating);
+                      if (transferSegments.length > 0) {
+                        const hasUnlikely = transferSegments.some(s => s.transfer_rating === 'unlikely');
+                        const hasRisky = transferSegments.some(s => s.transfer_rating === 'risky');
+                        const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
+                        const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
+                        return (
+                          <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
+                            {ratingText}
+                          </span>
+                        );
+                      }
+                      // If no risky transfers, show LIKELY badge
+                      if (!routeResult.has_risky_transfers && routeResult.num_transfers > 0) {
+                        return (
+                          <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                            LIKELY
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
                   <div className="route-option-time">
                     {formatDuration(routeResult.total_time_minutes)}
                   </div>
-                </div>
-
+            </div>
+            
                 <div className="route-option-meta">
                   {routeResult.departure_time && routeResult.arrival_time && (
                     <span>{formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
@@ -1049,9 +1135,21 @@ function App() {
                   <div className="route-option-header">
                     <div className="route-option-title">
                       <span className="route-option-badge alternative-badge">Next Train</span>
-                      <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
-                        LIKELY
-                      </span>
+                      {(() => {
+                        const transferSegments = routeResult.alternatives[0].segments.filter(s => s.transfer_rating);
+                        if (transferSegments.length > 0) {
+                          const hasUnlikely = transferSegments.some(s => s.transfer_rating === 'unlikely');
+                          const hasRisky = transferSegments.some(s => s.transfer_rating === 'risky');
+                          const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
+                          const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
+                          return (
+                            <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
+                              {ratingText}
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                     <div className="route-option-time">
                       {formatDuration(routeResult.alternatives[0].total_time_minutes)}
@@ -1092,14 +1190,79 @@ function App() {
                 </div>
               )}
 
-              {/* Additional Alternatives */}
-              {routeResult.alternatives && routeResult.alternatives.length > 1 && (
+              {/* Show More Options Button */}
+              {(!routeResult.has_risky_transfers || (routeResult.alternatives && routeResult.alternatives.length > 0)) && (
                 <div className="more-alternatives">
-                  <button className="more-alternatives-button">
-                    View {routeResult.alternatives.length - 1} more {routeResult.alternatives.length - 1 === 1 ? 'option' : 'options'}
+                  <button 
+                    className="more-alternatives-button"
+                    onClick={fetchMoreAlternatives}
+                    disabled={loadingMoreAlternatives || additionalAlternatives.length > 0}
+                  >
+                    {loadingMoreAlternatives ? 'Loading...' : additionalAlternatives.length > 0 ? 'No more options' : 'Show More Options'}
                   </button>
                 </div>
               )}
+
+              {/* Display Additional Alternatives */}
+              {additionalAlternatives.map((altRoute, altIdx) => (
+                <div key={`additional-${altIdx}`} className="route-option alternative-route-option" role="region" aria-label={`Alternative route option ${altIdx + 1}`}>
+                  <div className="route-option-header">
+                    <div className="route-option-title">
+                      <span className="route-option-badge alternative-badge">Option {altIdx + 1 + (routeResult.alternatives?.length || 0) + 1}</span>
+                      {(() => {
+                        const transferSegments = altRoute.segments.filter(s => s.transfer_rating);
+                        if (transferSegments.length > 0) {
+                          const hasUnlikely = transferSegments.some(s => s.transfer_rating === 'unlikely');
+                          const hasRisky = transferSegments.some(s => s.transfer_rating === 'risky');
+                          const rating = hasUnlikely ? 'unlikely' : (hasRisky ? 'risky' : 'likely');
+                          const ratingText = hasUnlikely ? 'UNLIKELY' : (hasRisky ? 'RISKY' : 'LIKELY');
+                          return (
+                            <span className={`transfer-rating-badge transfer-rating-${rating}`} aria-label={`Transfer rating: ${ratingText}`}>
+                              {ratingText}
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+                    <div className="route-option-time">
+                      {formatDuration(altRoute.total_time_minutes)}
+                      {altRoute.total_time_minutes > routeResult.total_time_minutes && (
+                        <span className="time-difference-inline">
+                          (+{(altRoute.total_time_minutes - routeResult.total_time_minutes).toFixed(0)}m)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="route-option-meta">
+                    {altRoute.departure_time && altRoute.arrival_time && (
+                      <span>{formatTime(altRoute.departure_time)} - {formatTime(altRoute.arrival_time)}</span>
+                    )}
+                    <span> • {altRoute.num_transfers} {altRoute.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
+                  </div>
+
+                  <div className="grouped-segments-list" role="list" aria-label={`Additional alternative route ${altIdx + 1} segments`}>
+                    {groupSegmentsByLine(altRoute.segments).map((group, idx) => (
+                      <GroupedSegmentDisplay
+                        key={`additional-alt-${altIdx}-${idx}`}
+                        group={group}
+                        isExpanded={expandedGroups.has(2000 + altIdx * 100 + idx)}
+                        onToggle={() => {
+                          const newExpanded = new Set(expandedGroups);
+                          const groupId = 2000 + altIdx * 100 + idx;
+                          if (newExpanded.has(groupId)) {
+                            newExpanded.delete(groupId);
+                          } else {
+                            newExpanded.add(groupId);
+                          }
+                          setExpandedGroups(newExpanded);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1114,14 +1277,14 @@ function App() {
 
               <div className="time-display">
                 <div className="time-value">
-                  {formatDuration(result.duration_minutes)}
-                </div>
+                {formatDuration(result.duration_minutes)}
+              </div>
                 <div className="time-meta">
-                  {result.distance_km} km
-                </div>
+                {result.distance_km} km
               </div>
             </div>
-          )}
+          </div>
+        )}
         </div>
       </div>
 
@@ -1136,7 +1299,7 @@ function App() {
             url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
           />
-
+          
           <MapClickHandler
             onMapClick={handleMapClick}
             selectingStation={selectingStation}
@@ -1187,44 +1350,44 @@ function App() {
             }
 
             return (
-              <Marker
-                key={station.id}
-                position={[station.latitude, station.longitude]}
-                icon={createTMarker(station.lines)}
-                eventHandlers={{
-                  click: () => {
-                    // Allow clicking on station markers to select them
-                    if (!startStation) {
-                      setStartStation(station);
-                    } else if (!endStation) {
-                      setEndStation(station);
-                    }
+            <Marker
+              key={station.id}
+              position={[station.latitude, station.longitude]}
+              icon={createTMarker(station.lines)}
+              eventHandlers={{
+                click: () => {
+                  // Allow clicking on station markers to select them
+                  if (!startStation) {
+                    setStartStation(station);
+                  } else if (!endStation) {
+                    setEndStation(station);
                   }
-                }}
-              >
-                <Popup>
-                  <div>
-                    <strong>{station.name}</strong><br />
-                    <div style={{ marginTop: '4px' }}>
+                }
+              }}
+            >
+              <Popup>
+                <div>
+                  <strong>{station.name}</strong><br />
+                  <div style={{ marginTop: '4px' }}>
                       {(() => {
                         const getLineColor = (line: string) => {
                           const cleanLine = line.replace(' Line', '').trim();
-                          const lineColors: { [key: string]: string } = {
-                            'Red': '#DA291C',
-                            'Orange': '#ED8B00',
-                            'Blue': '#003DA5',
-                            'Green': '#00843D',
-                            'Green-B': '#00843D',
-                            'Green-C': '#00843D',
-                            'Green-D': '#00843D',
-                            'Green-E': '#00843D',
+                      const lineColors: { [key: string]: string } = {
+                        'Red': '#DA291C',
+                        'Orange': '#ED8B00',
+                        'Blue': '#003DA5',
+                        'Green': '#00843D',
+                        'Green-B': '#00843D',
+                        'Green-C': '#00843D',
+                        'Green-D': '#00843D',
+                        'Green-E': '#00843D',
                             'B': '#00843D',
                             'C': '#00843D',
                             'D': '#00843D',
                             'E': '#00843D',
-                            'Silver': '#7C878E',
-                            'Mattapan': '#DA291C'
-                          };
+                        'Silver': '#7C878E',
+                        'Mattapan': '#DA291C'
+                      };
                           // Color all commuter rail lines purple
                           const commuterRailLines = [
                             'Framingham/Worcester', 'Providence/Stoughton', 'Lowell', 'Haverhill',
@@ -1248,35 +1411,35 @@ function App() {
                         });
 
                         return Array.from(uniqueLinesByColor.values()).map((line, idx) => {
-                          const cleanLine = line.replace(' Line', '').trim();
+                      const cleanLine = line.replace(' Line', '').trim();
                           const color = getLineColor(line);
-                          return (
-                            <span
-                              key={idx}
-                              style={{
-                                display: 'inline-block',
-                                backgroundColor: color,
-                                color: 'white',
-                                padding: '2px 6px',
-                                borderRadius: '3px',
-                                fontSize: '11px',
-                                fontWeight: 'bold',
-                                marginRight: '4px',
-                                marginBottom: '2px'
-                              }}
-                            >
-                              {cleanLine}
-                            </span>
-                          );
+                      return (
+                        <span
+                          key={idx}
+                          style={{
+                            display: 'inline-block',
+                            backgroundColor: color,
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '3px',
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            marginRight: '4px',
+                            marginBottom: '2px'
+                          }}
+                        >
+                          {cleanLine}
+                        </span>
+                      );
                         });
                       })()}
-                    </div>
-                    <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
-                      {station.municipality}
-                    </div>
                   </div>
-                </Popup>
-              </Marker>
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
+                    {station.municipality}
+                  </div>
+                </div>
+              </Popup>
+            </Marker>
             );
           })}
 
