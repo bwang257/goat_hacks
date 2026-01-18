@@ -368,7 +368,7 @@ function formatTime(isoString: string): string {
 
 function formatDuration(minutes: number): string {
   if (minutes < 1) {
-    return 'Now';
+    return '< 1 min';
   } else if (minutes < 2) {
     return '1 min';
   } else if (minutes >= 60) {
@@ -491,6 +491,31 @@ function MapBoundsUpdater({
       map.fitBounds(bounds, { padding: [50, 50] });
     }
   }, [startStation, endStation, map]);
+  
+  return null;
+}
+
+// Component to track zoom level changes
+function ZoomTracker({ onZoomChange }: { onZoomChange: (zoom: number) => void }) {
+  const map = useMap();
+  
+  useEffect(() => {
+    const updateZoom = () => {
+      onZoomChange(map.getZoom());
+    };
+    
+    // Set initial zoom
+    updateZoom();
+    
+    // Listen for zoom changes
+    map.on('zoomend', updateZoom);
+    map.on('moveend', updateZoom); // Also update on pan (zoom might change due to fitBounds)
+    
+    return () => {
+      map.off('zoomend', updateZoom);
+      map.off('moveend', updateZoom);
+    };
+  }, [map, onZoomChange]);
   
   return null;
 }
@@ -816,10 +841,13 @@ function App() {
   const [routeGeometry, setRouteGeometry] = useState<[number, number][]>([]);
   const [routeSegments, setRouteSegments] = useState<{ coordinates: [number, number][], color: string, opacity: number, dashArray: string | null }[]>([]);
   const [routeShapes, setRouteShapes] = useState<{ [key: string]: { id: string; coordinates: [number, number][]; }[] }>({});
-  const [walkingSpeed, setWalkingSpeed] = useState<number>(5.0); // km/h
+  const [walkingSpeed, setWalkingSpeed] = useState<number>(3.1); // mph (default 5.0 km/h = 3.1 mph)
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [initialLoading, setInitialLoading] = useState<boolean>(true);
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
   const [expandedRoutes, setExpandedRoutes] = useState<Set<number>>(new Set());
   const [transferStationData, setTransferStationData] = useState<any>(null);
+  const [currentZoom, setCurrentZoom] = useState<number>(13);
 
   // Helper function to get line color
   const getLineColor = (lineName: string) => {
@@ -845,12 +873,28 @@ function App() {
     }
   }, [startStation, endStation, walkingSpeed]);
 
-  // Load all stations on mount
+  // Load all stations on mount and hide initial loading screen
   useEffect(() => {
-    fetch(`${API_BASE}/api/stations`)
-      .then(res => res.json())
-      .then(data => setStations(data))
-      .catch(err => console.error('Error loading stations:', err));
+    const loadData = async () => {
+      try {
+        await fetch(`${API_BASE}/api/stations`)
+          .then(res => res.json())
+          .then(data => setStations(data))
+          .catch(err => console.error('Error loading stations:', err));
+        
+        // Hide loading screen after a minimum delay for smooth UX
+        setTimeout(() => {
+          setInitialLoading(false);
+        }, 500);
+      } catch (err) {
+        // Hide loading screen even if there's an error
+        setTimeout(() => {
+          setInitialLoading(false);
+        }, 500);
+      }
+    };
+    
+    loadData();
   }, []);
 
   // Load route shapes on mount
@@ -921,7 +965,8 @@ function App() {
             station_id_1: startStation.id,
             station_id_2: endStation.id,
             prefer_fewer_transfers: true,
-            use_realtime: true
+            use_realtime: true,
+            walking_speed_kmh: walkingSpeed
           })
         });
 
@@ -967,7 +1012,8 @@ function App() {
                   station_id_1: startStation.id,
                   station_id_2: endStation.id,
                   prefer_fewer_transfers: true,
-                  use_realtime: true
+                  use_realtime: true,
+                  walking_speed_kmh: walkingSpeed * 1.60934 // Convert mph to km/h
                 })
               });
 
@@ -1113,6 +1159,19 @@ function App() {
     setExpandedRoutes(new Set());
   };
 
+  // Show initial loading screen
+  if (initialLoading) {
+    return (
+      <div className="initial-loading-screen">
+        <div className="initial-loading-content">
+          <div className="mbta-t-logo-loading">T</div>
+          <h1 className="initial-loading-title">MBTA Route Finder</h1>
+          <div className="initial-loading-spinner"></div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-container">
       {/* Loading Overlay */}
@@ -1155,88 +1214,182 @@ function App() {
         </div>
       )}
 
-      {/* Sidebar */}
-      <div className="sidebar">
-        {/* Show route view when route is available */}
-        {(routeResult || sameLineRoute?.is_same_line || result) ? (
-          <>
-            <div className="route-header">
+      {/* Map - Full Screen */}
+      <div className="map-container">
+        <MapContainer
+          center={[42.3601, -71.0589]} // Boston
+          zoom={13}
+          style={{ height: '100%', width: '100%' }}
+        >
+          <TileLayer
+            url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          />
+          
+          <MapClickHandler
+            onMapClick={handleMapClick}
+            selectingStation={selectingStation}
+          />
+
+          <MapBoundsUpdater
+            startStation={startStation}
+            endStation={endStation}
+          />
+
+          {/* Station Markers */}
+          {stations.map(station => (
+            <Marker
+              key={station.id}
+              position={[station.latitude, station.longitude]}
+              icon={L.divIcon({
+                className: 't-marker',
+                html: `<div style="
+                  background: ${getLineColor(station.lines[0] || 'Gray')};
+                  color: white;
+                  width: 24px;
+                  height: 24px;
+                  border-radius: 50%;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  font-weight: 700;
+                  font-size: 12px;
+                  border: 2px solid white;
+                  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                ">T</div>`,
+                iconSize: [24, 24],
+                iconAnchor: [12, 12]
+              })}
+            >
+              <Popup>
+                <strong>{station.name}</strong>
+                <br />
+                {station.lines.join(', ')}
+              </Popup>
+            </Marker>
+          ))}
+
+          {/* Route Geometry */}
+          {routeGeometry.length > 0 && (
+            <Polyline
+              positions={routeGeometry}
+              color="#0066cc"
+              weight={4}
+              opacity={0.7}
+            />
+          )}
+
+          {/* Route Segments */}
+          {routeSegments.map((segment, idx) => (
+            <Polyline
+              key={idx}
+              positions={segment.coordinates}
+              color={segment.color}
+              weight={4}
+              opacity={segment.opacity}
+              dashArray={segment.dashArray || undefined}
+            />
+          ))}
+        </MapContainer>
+      </div>
+
+      {/* Search Overlay - Top Left */}
+      {!(routeResult || sameLineRoute?.is_same_line || result) && (
+        <div className="search-overlay">
+          <div className="search-overlay-header">
+            <div className="search-overlay-title">MBTA Route Finder</div>
+            <button
+              className="settings-button-compact"
+              onClick={() => setShowSettings(!showSettings)}
+              aria-label="Toggle settings"
+              title="Settings"
+            >
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M10 12.5C11.3807 12.5 12.5 11.3807 12.5 10C12.5 8.61929 11.3807 7.5 10 7.5C8.61929 7.5 7.5 8.61929 7.5 10C7.5 11.3807 8.61929 12.5 10 12.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M16.25 10C16.25 10 15.125 8.875 14.375 8.125L15.625 5.625C15.625 5.625 14.5 4.5 13.75 3.75L11.25 5C11.25 5 10.125 4.25 10 4.25C9.875 4.25 8.75 5 8.75 5L6.25 3.75C6.25 3.75 5.125 4.5 4.375 5.25L5.625 7.75C5.625 7.75 4.5 8.875 4.5 10C4.5 10.125 5.25 11.25 5.25 11.25L3.75 13.75C3.75 13.75 4.5 14.875 5.25 15.625L7.75 14.375C7.75 14.375 8.875 15.5 10 15.5C10.125 15.5 11.25 14.75 11.25 14.75L13.75 15.625C13.75 15.625 14.875 14.5 15.625 13.75L14.375 11.25C14.375 11.25 15.5 10.125 16.25 10Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+          </div>
+          <div className="search-overlay-controls">
+            <StationSearch
+              label="From"
+              onSelect={setStartStation}
+              selectedStation={startStation}
+            />
+            <StationSearch
+              label="To"
+              onSelect={setEndStation}
+              selectedStation={endStation}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Settings Panel - Overlay */}
+      {showSettings && (
+        <div className="settings-panel-overlay">
+          <div className="settings-panel">
+            <div className="settings-panel-header">
+              <h2 className="settings-panel-title">Settings</h2>
+              <button
+                className="settings-panel-close"
+                onClick={() => setShowSettings(false)}
+                aria-label="Close settings"
+              >
+                ×
+              </button>
+            </div>
+            <div className="settings-panel-content">
+              <div className="control-group">
+                <label className="control-label" htmlFor="walking-speed-settings">
+                  Walking Speed: {walkingSpeed.toFixed(1)} mph
+                </label>
+                <input
+                  id="walking-speed-settings"
+                  type="range"
+                  min="1"
+                  max="5"
+                  step="0.1"
+                  value={walkingSpeed}
+                  onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
+                  className="range-slider"
+                  aria-label="Walking speed"
+                  aria-valuemin={1}
+                  aria-valuemax={5}
+                  aria-valuenow={walkingSpeed}
+                />
+                <div className="range-labels">
+                  <span>Slow (1 mph)</span>
+                  <span>Fast (5 mph)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Results Overlay - Left Side */}
+      {(routeResult || sameLineRoute?.is_same_line || result) && (
+        <div className="results-overlay">
+          <div className="results-overlay-header">
+            <div className="results-overlay-title">
               <button
                 onClick={clearSelection}
-                className="back-button"
+                className="back-button-compact"
                 aria-label="Back to station selection"
               >
                 <span className="back-arrow">←</span>
-                <span>Back</span>
               </button>
-              <div className="route-title">
-                <div className="mbta-t-logo">T</div>
-                <div>
-                  <div className="route-from-to">
-                    {startStation?.name} → {endStation?.name}
-                  </div>
-                  <div className="route-subtitle">Trip Options</div>
+              <div>
+                <div className="route-from-to">
+                  {startStation?.name} → {endStation?.name}
                 </div>
+                <div className="route-subtitle">Trip Options</div>
               </div>
             </div>
-          </>
-        ) : (
-          <>
-            <div className="header">
-              <div className="header-logo">
-                <div className="mbta-t-logo-large">T</div>
-                <div>
-                  <h1 className="header-title">MBTA Route Finder</h1>
-                  <p className="header-subtitle">
-          Select two stations to find the best route between them
-        </p>
-                </div>
-              </div>
-            </div>
-
-        {/* Start Station */}
-        <StationSearch
-          label="From Station"
-          onSelect={setStartStation}
-          selectedStation={startStation}
-        />
-
-        {/* End Station */}
-        <StationSearch
-          label="To Station"
-          onSelect={setEndStation}
-          selectedStation={endStation}
-        />
-
-        {/* Walking Speed Control */}
-            <div className="control-group">
-              <label className="control-label" htmlFor="walking-speed">
-                Walking Speed: {walkingSpeed.toFixed(1)} km/h
-          </label>
-          <input
-                id="walking-speed"
-            type="range"
-            min="2"
-            max="8"
-            step="0.5"
-            value={walkingSpeed}
-            onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
-                className="range-slider"
-                aria-label="Walking speed"
-                aria-valuemin={2}
-                aria-valuemax={8}
-                aria-valuenow={walkingSpeed}
-              />
-              <div className="range-labels">
-            <span>Slow (2 km/h)</span>
-            <span>Fast (8 km/h)</span>
           </div>
-        </div>
-          </>
-        )}
-
-        {/* Results Container */}
-        <div className="results-container">
+          <div className="results-overlay-content">
+            <div className="results-container">
           {/* Same-line route result - Convert to RouteResult format */}
           {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (() => {
             // Convert next_trains to RouteResult format
@@ -1675,10 +1828,12 @@ function App() {
             </div>
           </div>
         )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Map */}
+      {/* Map - Full Screen */}
       <div className="map-container">
         <MapContainer
           center={[42.3601, -71.0589]} // Boston
@@ -1699,6 +1854,8 @@ function App() {
             startStation={startStation}
             endStation={endStation}
           />
+
+          <ZoomTracker onZoomChange={setCurrentZoom} />
 
           {/* Render All Route Shapes (Background) */}
           {!result && !routeResult && !sameLineRoute && Object.entries(routeShapes).map(([routeId, shapes]) => {
@@ -1737,6 +1894,18 @@ function App() {
               if (!isOnRoute && station.id !== startStation.id && station.id !== endStation.id) {
                 return null;
               }
+            }
+            
+            // Only show stations when zoomed in enough (zoom >= 13)
+            // Always show start/end stations and stations on the route regardless of zoom
+            const isSelectedOrOnRoute = startStation?.id === station.id || 
+                                       endStation?.id === station.id ||
+                                       (routeResult && routeResult.segments.some(seg =>
+                                         seg.from_station_id === station.id || seg.to_station_id === station.id
+                                       ));
+            
+            if (!isSelectedOrOnRoute && currentZoom < 13) {
+              return null;
             }
 
             return (

@@ -142,6 +142,8 @@ class DijkstraRouter:
         path: List[Dict],
         departure_time: datetime,
         mbta_client,
+        walking_speed_kmh: float = 5.0,
+        request_time: Optional[datetime] = None,
         debug: bool = False
     ) -> Route:
         """
@@ -149,8 +151,10 @@ class DijkstraRouter:
 
         Args:
             path: List of edges from Dijkstra
-            departure_time: When to start the journey (request time = "now")
+            departure_time: When to start searching for departures (may be later than "now" for alternatives)
             mbta_client: MBTA API client for real-time data
+            walking_speed_kmh: User's walking speed preference
+            request_time: Original "now" time when user requested route (for total_time calculation)
             debug: Print debug information
 
         Returns:
@@ -162,10 +166,14 @@ class DijkstraRouter:
             print(f"REAL-TIME ENRICHMENT")
             print(f"{'='*60}")
             print(f"Departure time: {departure_time.strftime('%I:%M %p')}")
+            if request_time:
+                print(f"Request time (now): {request_time.strftime('%I:%M %p')}")
             print()
 
         # Store request time separately - this is when user clicked, used for total_time calculation
-        request_time = departure_time
+        # If not provided, use departure_time as request_time (for primary routes)
+        if request_time is None:
+            request_time = departure_time
         current_time = departure_time
         enriched_segments = []
         total_distance = 0
@@ -183,9 +191,13 @@ class DijkstraRouter:
                 print(f"Segment {i+1}: {edge_type.upper()} - {from_name} → {to_name}")
 
             if edge_type == "walk":
-                # Walking: time is fixed
-                walk_time = edge.get("time_seconds", 0)
+                # Walking: recalculate time based on user's walking speed
                 walk_distance = edge.get("distance_meters", 0)
+                
+                # Calculate walking time based on user's speed preference
+                # Speed conversion: km/h to m/s
+                speed_ms = walking_speed_kmh * 1000 / 3600
+                walk_time = walk_distance / speed_ms if speed_ms > 0 else edge.get("time_seconds", 0)
 
                 arrival_time = current_time + timedelta(seconds=walk_time)
 
@@ -397,6 +409,8 @@ class DijkstraRouter:
         end_station_id: str,
         departure_time: Optional[datetime] = None,
         mbta_client = None,
+        walking_speed_kmh: float = 5.0,
+        request_time: Optional[datetime] = None,
         debug: bool = False
     ) -> Optional[Route]:
         """
@@ -405,8 +419,10 @@ class DijkstraRouter:
         Args:
             start_station_id: Starting station ID
             end_station_id: Destination station ID
-            departure_time: When to depart (defaults to now)
+            departure_time: When to start searching for departures (defaults to now, may be later for alternatives)
             mbta_client: MBTA API client for real-time data (optional)
+            walking_speed_kmh: User's walking speed preference
+            request_time: Original "now" time when user requested route (for total_time calculation)
             debug: Print debug information
 
         Returns:
@@ -422,9 +438,20 @@ class DijkstraRouter:
         # Set default departure time
         if departure_time is None:
             departure_time = datetime.now(timezone.utc)
+        
+        # If request_time not provided, use departure_time (for primary routes where they're the same)
+        if request_time is None:
+            request_time = departure_time
 
         # Phase 2: Enrich with real-time data (minimal API calls)
-        route = await self.enrich_with_realtime(path, departure_time, mbta_client, debug=debug)
+        route = await self.enrich_with_realtime(
+            path, 
+            departure_time, 
+            mbta_client, 
+            walking_speed_kmh=walking_speed_kmh,
+            request_time=request_time,
+            debug=debug
+        )
 
         return route
 
@@ -435,6 +462,7 @@ class DijkstraRouter:
         end_station_id: str,
         mbta_client,
         request_time: Optional[datetime] = None,
+        walking_speed_kmh: float = 5.0,
         max_alternatives: int = 3,
         debug: bool = False
     ) -> List[Route]:
@@ -501,12 +529,14 @@ class DijkstraRouter:
                 print(f"\nTrying departure at {adjusted_departure.strftime('%I:%M %p')} (+{delay_seconds/60:.0f} min)")
 
             try:
-                # Find route with adjusted departure time
+                # Find route with adjusted departure time, but pass original request_time for total_time calculation
                 alt_route = await self.find_route(
                     start_station_id=start_station_id,
                     end_station_id=end_station_id,
                     departure_time=adjusted_departure,
                     mbta_client=mbta_client,
+                    walking_speed_kmh=walking_speed_kmh,
+                    request_time=request_time,  # Pass original "now" time
                     debug=False  # Don't spam debug output
                 )
 
@@ -515,11 +545,12 @@ class DijkstraRouter:
                         print("  No route found")
                     continue
 
-                # Recalculate total_time_seconds from original request time (now) to arrival
-                if alt_route.arrival_time:
-                    original_total_seconds = (alt_route.arrival_time - request_time).total_seconds()
-                    alt_route.total_time_seconds = original_total_seconds
-                    alt_route.total_time_minutes = round(original_total_seconds / 60, 1)
+                # total_time_seconds should already be calculated from request_time to arrival_time
+                # But ensure it's correct by recalculating
+                if alt_route.arrival_time and request_time:
+                    calculated_total_seconds = (alt_route.arrival_time - request_time).total_seconds()
+                    alt_route.total_time_seconds = calculated_total_seconds
+                    alt_route.total_time_minutes = round(calculated_total_seconds / 60, 1)
 
                 # If primary route has risky transfers, only accept alternatives with all "likely" transfers
                 # Otherwise, accept any alternative route (for showing later departure times)
@@ -556,8 +587,15 @@ class DijkstraRouter:
                     print(f"  Error finding alternative: {e}")
                 continue
 
-        # Sort alternatives by total journey time (fastest first)
-        alternatives.sort(key=lambda r: r.total_time_seconds)
+        # Filter alternatives to only include those with later arrival times than primary route
+        if primary_route.arrival_time:
+            alternatives = [
+                alt for alt in alternatives 
+                if alt.arrival_time and alt.arrival_time > primary_route.arrival_time
+            ]
+        
+        # Sort alternatives by arrival time (earliest later arrival first)
+        alternatives.sort(key=lambda r: r.arrival_time if r.arrival_time else datetime.max.replace(tzinfo=timezone.utc))
 
         if debug:
             print(f"\nFound {len(alternatives)} alternative route(s)")

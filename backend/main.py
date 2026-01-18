@@ -868,6 +868,7 @@ class RouteRequest(BaseModel):
     prefer_fewer_transfers: bool = True
     departure_time: Optional[str] = None
     use_realtime: bool = True
+    walking_speed_kmh: float = 5.0  # User's walking speed preference
 
 @app.post("/api/route", response_model=RouteResponse)
 async def find_route(
@@ -882,6 +883,7 @@ async def find_route(
     prefer_fewer_transfers = request.prefer_fewer_transfers
     departure_time = request.departure_time
     use_realtime = request.use_realtime
+    walking_speed_kmh = request.walking_speed_kmh
     
     if not TRANSIT_GRAPH:
         raise HTTPException(
@@ -919,6 +921,7 @@ async def find_route(
             end_station_id=station_id_2,
             departure_time=dep_time,
             mbta_client=mbta_client if use_realtime else None,
+            walking_speed_kmh=walking_speed_kmh,
             debug=False
         )
     except Exception as e:
@@ -983,31 +986,26 @@ async def find_route(
                 )
                 alternative_routes = alt_routes[:2]
             else:
-                # For safe routes, find 2 routes with later departure times
-                base_departure = route.departure_time if route.departure_time else dep_time
-                delay_increments = [300, 600]  # 5 and 10 minutes later
-                
-                for delay_seconds in delay_increments:
-                    if len(alternative_routes) >= 2:
-                        break
-                    
-                    adjusted_departure = base_departure + timedelta(seconds=delay_seconds)
-                    try:
-                        alt_route = await DIJKSTRA_ROUTER.find_route(
-                            start_station_id=station_id_1,
-                            end_station_id=station_id_2,
-                            departure_time=adjusted_departure,
-                            mbta_client=mbta_client,
-                            debug=False
-                        )
-                        if alt_route and alt_route.arrival_time:
-                            # Recalculate total_time_seconds from original request time (now) to arrival
-                            original_total_seconds = (alt_route.arrival_time - dep_time).total_seconds()
-                            alt_route.total_time_seconds = original_total_seconds
-                            alt_route.total_time_minutes = round(original_total_seconds / 60, 1)
-                            alternative_routes.append(alt_route)
-                    except Exception as e:
-                        print(f"Error finding alternative route at +{delay_seconds/60:.0f}min: {e}")
+                # For safe routes, use suggest_alternatives which handles later departures correctly
+                alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
+                    primary_route=route,
+                    start_station_id=station_id_1,
+                    end_station_id=station_id_2,
+                    mbta_client=mbta_client,
+                    request_time=dep_time,
+                    walking_speed_kmh=walking_speed_kmh,
+                    max_alternatives=2,  # Get 2 alternatives
+                    debug=False
+                )
+                # Filter to only include routes with later arrival times than primary
+                if route.arrival_time:
+                    alt_routes = [
+                        alt for alt in alt_routes 
+                        if alt.arrival_time and alt.arrival_time > route.arrival_time
+                    ]
+                # Sort by arrival time to ensure later arrivals come after earlier ones
+                alt_routes.sort(key=lambda r: r.arrival_time if r.arrival_time else datetime.max.replace(tzinfo=timezone.utc))
+                alternative_routes = alt_routes[:2]
         except Exception as e:
             print(f"Error finding alternative routes: {e}")
 
@@ -1136,6 +1134,7 @@ async def get_additional_alternatives(
     prefer_fewer_transfers = request.prefer_fewer_transfers
     departure_time = request.departure_time
     use_realtime = request.use_realtime
+    walking_speed_kmh = request.walking_speed_kmh
     
     if not TRANSIT_GRAPH:
         raise HTTPException(
@@ -1166,6 +1165,7 @@ async def get_additional_alternatives(
             end_station_id=station_id_2,
             departure_time=dep_time,
             mbta_client=mbta_client if use_realtime else None,
+            walking_speed_kmh=walking_speed_kmh,
             debug=False
         )
     except Exception as e:
@@ -1185,6 +1185,7 @@ async def get_additional_alternatives(
                 end_station_id=station_id_2,
                 mbta_client=mbta_client,
                 request_time=dep_time,
+                walking_speed_kmh=walking_speed_kmh,
                 max_alternatives=5,  # Fetch more to ensure we get 2 good alternatives
                 debug=False
             )
@@ -1209,6 +1210,8 @@ async def get_additional_alternatives(
                             end_station_id=station_id_2,
                             departure_time=adjusted_departure,
                             mbta_client=mbta_client,
+                            walking_speed_kmh=walking_speed_kmh,
+                            request_time=dep_time,  # Pass original "now" time for total_time calculation
                             debug=False
                         )
                         if alt_route and alt_route.arrival_time:
