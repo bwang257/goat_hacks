@@ -35,6 +35,7 @@ interface WalkingTimeResult {
   walking_speed_kmh: number;
   station_1: Station;
   station_2: Station;
+  geometry_coordinates?: [number, number][];
 }
 
 interface NextTrainInfo {
@@ -118,40 +119,54 @@ const endIcon = new L.Icon({
 
 // Create custom T logo markers for each line
 function createTMarker(lines: string[]): L.DivIcon {
-  // Determine the color based on the primary line
-  const lineColors: { [key: string]: string } = {
-    'Red': '#DA291C',
-    'Orange': '#ED8B00',
-    'Blue': '#003DA5',
-    'Green': '#00843D',
-    'Green-B': '#00843D',
-    'Green-C': '#00843D',
-    'Green-D': '#00843D',
-    'Green-E': '#00843D',
-    'B': '#00843D',
-    'C': '#00843D',
-    'D': '#00843D',
-    'E': '#00843D',
-    'Silver': '#7C878E',
-    'Mattapan': '#DA291C'
+  const getLineColor = (line: string) => {
+    const cleanLine = line.replace(' Line', '').trim();
+    const lineColors: { [key: string]: string } = {
+      'Red': '#DA291C',
+      'Orange': '#ED8B00',
+      'Blue': '#003DA5',
+      'Green': '#00843D',
+      'Green-B': '#00843D',
+      'Green-C': '#00843D',
+      'Green-D': '#00843D',
+      'Green-E': '#00843D',
+      'B': '#00843D',
+      'C': '#00843D',
+      'D': '#00843D',
+      'E': '#00843D',
+      'Silver': '#7C878E',
+      'Mattapan': '#DA291C'
+    };
+    // Color all commuter rail lines purple
+    const commuterRailLines = [
+      'Framingham/Worcester', 'Providence/Stoughton', 'Lowell', 'Haverhill',
+      'Fitchburg', 'Newburyport/Rockport', 'Kingston', 'Greenbush',
+      'Needham', 'Fairmount', 'Franklin/Foxboro', 'Fall River/New Bedford',
+      'Foxboro Event Service'
+    ];
+    if (cleanLine.startsWith('CR-') || commuterRailLines.some(cr => cleanLine.startsWith(cr))) {
+      return '#80276C'; // Purple for commuter rail
+    }
+    return lineColors[cleanLine] || '#000000';
   };
 
   // Get the primary line color
   let primaryColor = '#000000';
   for (const line of lines) {
-    const cleanLine = line.replace(' Line', '').trim();
-    if (lineColors[cleanLine]) {
-      primaryColor = lineColors[cleanLine];
-      break;
-    }
+    primaryColor = getLineColor(line);
+    break;
   }
 
-  // Create multi-line display if station has multiple lines
+  // Create multi-line display with unique colors only
+  const uniqueColors = new Set<string>();
   const lineIndicators = lines.map(line => {
-    const cleanLine = line.replace(' Line', '').trim();
-    const color = lineColors[cleanLine] || '#000000';
+    const color = getLineColor(line);
+    if (uniqueColors.has(color)) {
+      return null; // Skip duplicate colors
+    }
+    uniqueColors.add(color);
     return `<div style="background-color: ${color}; width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin: 0 1px;"></div>`;
-  }).join('');
+  }).filter(indicator => indicator !== null).join('');
 
   return L.divIcon({
     className: 't-marker',
@@ -214,6 +229,13 @@ function formatDuration(minutes: number): string {
     return 'Now';
   } else if (minutes < 2) {
     return '1 min';
+  } else if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const mins = Math.round(minutes % 60);
+    if (mins === 0) {
+      return `${hours}h`;
+    }
+    return `${hours}h ${mins}m`;
   } else {
     return `${Math.round(minutes)} min`;
   }
@@ -889,44 +911,70 @@ function App() {
                 <div>
                   <strong>{station.name}</strong><br />
                   <div style={{ marginTop: '4px' }}>
-                    {station.lines.map((line, idx) => {
-                      const lineColors: { [key: string]: string } = {
-                        'Red': '#DA291C',
-                        'Orange': '#ED8B00',
-                        'Blue': '#003DA5',
-                        'Green': '#00843D',
-                        'Green-B': '#00843D',
-                        'Green-C': '#00843D',
-                        'Green-D': '#00843D',
-                        'Green-E': '#00843D',
-                        'B': '#00843D',
-                        'C': '#00843D',
-                        'D': '#00843D',
-                        'E': '#00843D',
-                        'Silver': '#7C878E',
-                        'Mattapan': '#DA291C'
+                    {(() => {
+                      const getLineColor = (line: string) => {
+                        const cleanLine = line.replace(' Line', '').trim();
+                        const lineColors: { [key: string]: string } = {
+                          'Red': '#DA291C',
+                          'Orange': '#ED8B00',
+                          'Blue': '#003DA5',
+                          'Green': '#00843D',
+                          'Green-B': '#00843D',
+                          'Green-C': '#00843D',
+                          'Green-D': '#00843D',
+                          'Green-E': '#00843D',
+                          'B': '#00843D',
+                          'C': '#00843D',
+                          'D': '#00843D',
+                          'E': '#00843D',
+                          'Silver': '#7C878E',
+                          'Mattapan': '#DA291C'
+                        };
+                        // Color all commuter rail lines purple
+                        const commuterRailLines = [
+                          'Framingham/Worcester', 'Providence/Stoughton', 'Lowell', 'Haverhill',
+                          'Fitchburg', 'Newburyport/Rockport', 'Kingston', 'Greenbush',
+                          'Needham', 'Fairmount', 'Franklin/Foxboro', 'Fall River/New Bedford',
+                          'Foxboro Event Service'
+                        ];
+                        if (cleanLine.startsWith('CR-') || commuterRailLines.some(cr => cleanLine.startsWith(cr))) {
+                          return '#80276C'; // Purple for commuter rail
+                        }
+                        return lineColors[cleanLine] || '#000000';
                       };
-                      const cleanLine = line.replace(' Line', '').trim();
-                      const color = lineColors[cleanLine] || '#000000';
-                      return (
-                        <span
-                          key={idx}
-                          style={{
-                            display: 'inline-block',
-                            backgroundColor: color,
-                            color: 'white',
-                            padding: '2px 6px',
-                            borderRadius: '3px',
-                            fontSize: '11px',
-                            fontWeight: 'bold',
-                            marginRight: '4px',
-                            marginBottom: '2px'
-                          }}
-                        >
-                          {cleanLine}
-                        </span>
-                      );
-                    })}
+                      
+                      // Deduplicate by color - keep only one line per color
+                      const uniqueLinesByColor = new Map<string, string>();
+                      station.lines.forEach(line => {
+                        const color = getLineColor(line);
+                        if (!uniqueLinesByColor.has(color)) {
+                          uniqueLinesByColor.set(color, line);
+                        }
+                      });
+                      
+                      return Array.from(uniqueLinesByColor.values()).map((line, idx) => {
+                        const cleanLine = line.replace(' Line', '').trim();
+                        const color = getLineColor(line);
+                        return (
+                          <span
+                            key={idx}
+                            style={{
+                              display: 'inline-block',
+                              backgroundColor: color,
+                              color: 'white',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              fontSize: '11px',
+                              fontWeight: 'bold',
+                              marginRight: '4px',
+                              marginBottom: '2px'
+                            }}
+                          >
+                            {cleanLine}
+                          </span>
+                        );
+                      });
+                    })()}
                   </div>
                   <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
                     {station.municipality}
@@ -960,6 +1008,36 @@ function App() {
           {routeGeometry.length > 0 && !sameLineRoute?.is_same_line && (
             <Polyline
               positions={routeGeometry}
+              pathOptions={{
+                color: '#0066cc',
+                weight: 4,
+                opacity: 0.7,
+                dashArray: '10, 10',
+                lineCap: 'round',
+                lineJoin: 'round'
+              }}
+            />
+          )}
+
+          {/* Direct walking path with geometry */}
+          {result && !sameLineRoute?.is_same_line && !routeResult && result.geometry_coordinates && result.geometry_coordinates.length > 0 && (
+            <Polyline
+              positions={result.geometry_coordinates}
+              pathOptions={{
+                color: '#0066cc',
+                weight: 4,
+                opacity: 0.7,
+                dashArray: '10, 10',
+                lineCap: 'round',
+                lineJoin: 'round'
+              }}
+            />
+          )}
+
+          {/* Fallback straight line walking path if no geometry */}
+          {result && !sameLineRoute?.is_same_line && !routeResult && (!result.geometry_coordinates || result.geometry_coordinates.length === 0) && (
+            <Polyline
+              positions={[[result.station_1.latitude, result.station_1.longitude], [result.station_2.latitude, result.station_2.longitude]]}
               pathOptions={{
                 color: '#0066cc',
                 weight: 4,

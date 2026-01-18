@@ -110,14 +110,26 @@ async def build_transit_graph(api_key: str = None):
             # Get route type for metadata
             route_type = routes.get(route_id, {}).get("type", 1)
             
-            # Calculate distance for reference (not used for time calculation)
+            # Calculate distance and time estimate
             station_coord = (station["latitude"], station["longitude"])
             connected_coord = (graph["nodes"][connected_station_id]["latitude"],
                              graph["nodes"][connected_station_id]["longitude"])
             distance = haversine_distance(*station_coord, *connected_coord)
             
-            # Add edge (directed) - NO time_seconds for train edges
-            # Time will be calculated from MBTA API schedules/predictions
+            # Estimate train travel time based on distance and average speeds
+            # Light Rail (Green/Red/Blue/Orange): avg 20 km/h = 5.56 m/s
+            # Heavy Rail (T commuter rail): avg 35 km/h = 9.72 m/s
+            # Plus add 30 seconds per stop for acceleration/deceleration and boarding
+            if route_type == 1:  # Light Rail (Green Line, etc.)
+                speed_ms = 5.56  # meters per second
+                stop_time = 30  # seconds per stop
+            else:  # Heavy Rail or other
+                speed_ms = 10  # meters per second average
+                stop_time = 45  # seconds per stop
+            
+            estimated_time = (distance / speed_ms) + stop_time
+            
+            # Add edge (directed) with estimated time
             edge = {
                 "from": station["id"],
                 "to": connected_station_id,
@@ -126,13 +138,14 @@ async def build_transit_graph(api_key: str = None):
                 "route_id": route_id,
                 "route_type": route_type,
                 "distance_meters": round(distance, 1),
-                # Note: time_seconds will be calculated dynamically from MBTA API
+                "time_seconds": round(estimated_time, 1),
+                "note": "Time is estimated from distance; will be refined by MBTA API schedules"
             }
             graph["edges"].append(edge)
             train_edges += 1
     
-    print(f"   Added {train_edges} train connections (connectivity graph)")
-    print("   Note: Train travel times will be calculated from MBTA API schedules")
+    print(f"   Added {train_edges} train connections with estimated times")
+    print("   Note: Times are based on distance estimates and will be refined by MBTA API")
     
     # 2. Add walking connections between nearby stations
     print("\n2. Calculating walking connections between nearby stations...")

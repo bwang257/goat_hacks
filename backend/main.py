@@ -14,6 +14,7 @@ import json
 import os
 from typing import List, Optional
 from datetime import datetime, timezone
+import polyline
 
 app = FastAPI(title="MBTA Walking Time API")
 
@@ -473,6 +474,7 @@ class WalkingTimeResponse(BaseModel):
     walking_speed_kmh: float
     station_1: StationInfo
     station_2: StationInfo
+    geometry_coordinates: Optional[List[List[float]]] = None
 
 def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """Calculate distance in meters between two points"""
@@ -645,8 +647,8 @@ async def get_walking_time(request: WalkingTimeRequest):
         lat1, lng1 = station1["latitude"], station1["longitude"]
         lat2, lng2 = station2["latitude"], station2["longitude"]
         
-        # Get walking route from OSRM
-        url = f"https://routing.openstreetmap.de/routed-foot/route/v1/foot/{lng1},{lat1};{lng2},{lat2}?overview=false"
+        # Get walking route from OSRM with geometry
+        url = f"https://routing.openstreetmap.de/routed-foot/route/v1/foot/{lng1},{lat1};{lng2},{lat2}?overview=full"
         
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(url)
@@ -667,6 +669,25 @@ async def get_walking_time(request: WalkingTimeRequest):
         speed_ms = request.walking_speed_kmh * 1000 / 3600
         duration_seconds = distance_meters / speed_ms
         duration_minutes = math.ceil(duration_seconds / 60)
+        
+        # Extract geometry if available
+        geometry_coordinates = None
+        if route.get("geometry"):
+            # Decode polyline geometry (latitude, longitude pairs)
+            geom = route["geometry"]
+            if isinstance(geom, str):
+                # Polyline-encoded format (default for OSRM)
+                try:
+                    decoded = polyline.decode(geom)
+                    geometry_coordinates = [[lat, lng] for lat, lng in decoded]
+                except Exception as e:
+                    print(f"Error decoding polyline: {e}")
+            elif isinstance(geom, dict) and geom.get("coordinates"):
+                # GeoJSON format
+                geometry_coordinates = [[lat, lng] for lng, lat in geom["coordinates"]]
+            elif isinstance(geom, list):
+                # Already a list of [lng, lat]
+                geometry_coordinates = [[lat, lng] for lng, lat in geom]
         
         return WalkingTimeResponse(
             duration_minutes=duration_minutes,
@@ -691,7 +712,8 @@ async def get_walking_time(request: WalkingTimeRequest):
                 lines=station2["lines"],
                 municipality=station2.get("municipality", ""),
                 wheelchair_boarding=station2.get("wheelchair_boarding", 0)
-            )
+            ),
+            geometry_coordinates=geometry_coordinates
         )
     
     except httpx.TimeoutException:
