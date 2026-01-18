@@ -48,6 +48,114 @@
   font-weight: 500;
 }
 
+.header-logo {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+/* ============================================================================
+   MBTA T LOGO
+   ============================================================================ */
+
+.mbta-t-logo-large {
+  width: 48px;
+  height: 48px;
+  background-color: var(--gray-900);
+  color: var(--white);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 28px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  flex-shrink: 0;
+}
+
+.mbta-t-logo {
+  width: 32px;
+  height: 32px;
+  background-color: var(--gray-900);
+  color: var(--white);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  flex-shrink: 0;
+}
+
+/* ============================================================================
+   ROUTE HEADER & BACK BUTTON
+   ============================================================================ */
+
+.route-header {
+  margin-bottom: var(--spacing-lg);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 2px solid var(--gray-200);
+}
+
+.back-button {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  background: var(--white);
+  border: 2px solid var(--gray-300);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--gray-700);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  margin-bottom: var(--spacing-md);
+}
+
+.back-button:hover {
+  background: var(--gray-50);
+  border-color: var(--gray-400);
+  color: var(--gray-900);
+}
+
+.back-button:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+}
+
+.back-arrow {
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.route-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.route-from-to {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--gray-900);
+  margin-bottom: 2px;
+}
+
+.route-subtitle {
+  font-size: 0.875rem;
+  color: var(--gray-600);
+  font-weight: 500;
+}
+
+.route-results-fullscreen {
+  flex: 1;
+  overflow-y: auto;
+}
+
 /* ============================================================================
    FORM ELEMENTS
    ============================================================================ */

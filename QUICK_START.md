@@ -23,13 +23,21 @@ This will:
 
 ### Transfer Rating System
 - **Smart Buffers**: Station-specific transfer times (Park St: 3.5min, DTX: 2.5min, etc.)
-- **Transfer Ratings**: Visual indicators showing LIKELY/RISKY/UNLIKELY
+- **Transfer Ratings**: Text indicators showing LIKELY/RISKY/UNLIKELY
 - **Alternative Routes**: Automatic suggestions when transfers are risky
 
-### Visual Indicators
-- ✅ **Green** = LIKELY transfer (> 5 min slack)
-- ⚠️ **Yellow** = RISKY transfer (2-5 min slack)
-- 🚫 **Red** = UNLIKELY transfer (< 2 min slack)
+### Transfer Ratings
+- **LIKELY** = Safe transfer (> 5 min slack)
+- **RISKY** = Tight transfer (2-5 min slack)
+- **UNLIKELY** = Very difficult transfer (< 2 min slack)
+
+### User Interface
+- **Apple Maps Style**: Grouped route segments showing consecutive stops on same line
+- **Two Route Options**: See earliest route and safer alternative side-by-side
+- **Smart Map View**: Route stations visible, non-route stations hidden
+- **Clean Navigation**: Back button returns to search when viewing routes
+- **MBTA T Logo**: Official branding throughout
+- **Accessibility**: Full keyboard navigation and screen reader support
 
 ## 🛑 Stopping the Application
 

@@ -466,8 +466,21 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
 
   if (group.type === 'train') {
     return (
-      <div className="grouped-segment" style={{ borderLeftColor: lineColor }}>
-        <div className="grouped-segment-header" onClick={onToggle}>
+      <div className="grouped-segment" style={{ borderLeftColor: lineColor }} role="listitem">
+        <div
+          className="grouped-segment-header"
+          onClick={onToggle}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onToggle();
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          aria-expanded={isExpanded}
+          aria-label={`${cleanLine} line from ${group.fromStation} to ${group.toStation}, ${group.totalStops} ${group.totalStops === 1 ? 'stop' : 'stops'}. Press Enter to ${isExpanded ? 'collapse' : 'expand'} details.`}
+        >
           <div className="grouped-segment-line">
             <span className="segment-badge" style={{ backgroundColor: lineColor }}>
               {cleanLine}
@@ -478,12 +491,12 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
           </div>
           <div className="grouped-segment-info">
             <span className="grouped-segment-stops">{group.totalStops} {group.totalStops === 1 ? 'stop' : 'stops'}</span>
-            <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
+            <span className="expand-icon" aria-hidden="true">{isExpanded ? '▼' : '▶'}</span>
           </div>
         </div>
         {group.departureTime && (
           <div className="grouped-segment-time">
-            🕐 {formatTime(group.departureTime)} → {group.arrivalTime ? formatTime(group.arrivalTime) : '—'}
+            {formatTime(group.departureTime)} → {group.arrivalTime ? formatTime(group.arrivalTime) : '—'}
           </div>
         )}
         {isExpanded && group.intermediateStops && group.intermediateStops.length > 0 && (
@@ -500,18 +513,15 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
     );
   } else if (group.type === 'transfer') {
     return (
-      <div className="grouped-segment transfer-segment">
+      <div className="grouped-segment transfer-segment" role="listitem">
         <div className="grouped-segment-header">
-          <span className="segment-badge" style={{ backgroundColor: '#FFA500' }}>
-            🔄 Transfer
+          <span className="segment-badge transfer-badge" style={{ backgroundColor: '#FFA500' }}>
+            Transfer
           </span>
           <span className="grouped-segment-route">at {group.fromStation}</span>
         </div>
         {group.transfer_rating && (
-          <div className={`transfer-rating transfer-rating-${group.transfer_rating}`}>
-            <span className="transfer-rating-icon">
-              {group.transfer_rating === 'likely' ? '✅' : group.transfer_rating === 'risky' ? '⚠️' : '🚫'}
-            </span>
+          <div className={`transfer-rating transfer-rating-${group.transfer_rating}`} aria-label={`Transfer rating: ${group.transfer_rating}`}>
             <span className="transfer-rating-text">
               {group.transfer_rating.toUpperCase()}
             </span>
@@ -521,10 +531,10 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
     );
   } else {
     return (
-      <div className="grouped-segment walk-segment">
+      <div className="grouped-segment walk-segment" role="listitem">
         <div className="grouped-segment-header">
-          <span className="segment-badge" style={{ backgroundColor: '#0066cc' }}>
-            🚶 Walk
+          <span className="segment-badge walk-badge" style={{ backgroundColor: '#0066cc' }}>
+            Walk
           </span>
           <span className="grouped-segment-route">
             {group.fromStation} → {group.toStation}
@@ -818,7 +828,6 @@ function App() {
                 </div>
               </div>
             </div>
-            <div className="results-container route-results-fullscreen">
           </>
         ) : (
           <>
@@ -872,11 +881,10 @@ function App() {
                 <span>Fast (8 km/h)</span>
               </div>
             </div>
-
-            </>
+          </>
         )}
 
-        {/* Results Container - Always shown */}
+        {/* Results Container */}
         <div className="results-container">
           {/* Same-line route result */}
           {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (
@@ -905,12 +913,13 @@ function App() {
               </div>
 
               <h3 style={{ fontSize: '0.95rem', marginBottom: 'var(--spacing-md)', fontWeight: 600, color: 'var(--gray-700)' }}>Next Trains</h3>
-              <div className="same-line-trains">
+              <div className="same-line-trains" role="list" aria-label="Upcoming trains">
                 {sameLineRoute.next_trains && sameLineRoute.next_trains.length > 0 ? (
                   sameLineRoute.next_trains.map((train, idx) => (
                     <div
                       key={idx}
                       className="train-item"
+                      role="listitem"
                       style={{
                         borderLeftColor: `#${sameLineRoute.line_color}`
                       }}
@@ -918,10 +927,10 @@ function App() {
                       <div className="train-countdown" style={{
                         color: `#${sameLineRoute.line_color}`
                       }}>
-                        ⏱️ Departs in {train.countdown_text}
+                        Departs in {train.countdown_text}
                       </div>
                       <div className="train-arrival">
-                        📍 Arrive: {formatTime(train.arrival_time)}
+                        Arrive: {formatTime(train.arrival_time)}
                       </div>
                       <div className="train-trip-time">
                         Trip time: {formatDuration(train.total_trip_minutes)}
@@ -929,7 +938,7 @@ function App() {
                     </div>
                   ))
                 ) : (
-                  <div style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>No upcoming trains</div>
+                  <div style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }} role="status">No upcoming trains</div>
                 )}
               </div>
             </div>
@@ -937,9 +946,9 @@ function App() {
 
           {/* Comprehensive Route Result - Apple Maps Style */}
           {routeResult && !sameLineRoute?.is_same_line && (
-            <div className="result-card">
+            <div className="result-card" role="article" aria-label="Trip options">
               <h2 className="result-card-title text-accent">
-                ✨ Trip Options
+                Trip Options
               </h2>
 
               <p className="result-card-subtitle">
@@ -947,7 +956,7 @@ function App() {
               </p>
 
               {/* Primary Route Option */}
-              <div className="route-option">
+              <div className="route-option" role="region" aria-label="Earliest route option">
                 <div className="route-option-header">
                   <div className="route-option-title">
                     <span className="route-option-badge">Earliest</span>
@@ -955,9 +964,12 @@ function App() {
                       <span className={`transfer-rating-badge transfer-rating-${
                         routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? 'unlikely' :
                         routeResult.segments.find(s => s.transfer_rating === 'risky') ? 'risky' : 'likely'
+                      }`} aria-label={`Transfer rating: ${
+                        routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? 'UNLIKELY' :
+                        routeResult.segments.find(s => s.transfer_rating === 'risky') ? 'RISKY' : 'LIKELY'
                       }`}>
-                        {routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? '🚫 UNLIKELY' :
-                         routeResult.segments.find(s => s.transfer_rating === 'risky') ? '⚠️ RISKY' : '✅ LIKELY'}
+                        {routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? 'UNLIKELY' :
+                         routeResult.segments.find(s => s.transfer_rating === 'risky') ? 'RISKY' : 'LIKELY'}
                       </span>
                     )}
                   </div>
@@ -973,7 +985,7 @@ function App() {
                   <span> • {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
                 </div>
 
-                <div className="grouped-segments-list">
+                <div className="grouped-segments-list" role="list" aria-label="Route segments">
                   {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
                     <GroupedSegmentDisplay
                       key={idx}
@@ -995,12 +1007,12 @@ function App() {
 
               {/* Alternative Route Option (Safest) */}
               {routeResult.alternatives && routeResult.alternatives.length > 0 && (
-                <div className="route-option alternative-route-option">
+                <div className="route-option alternative-route-option" role="region" aria-label="Safer alternative route option">
                   <div className="route-option-header">
                     <div className="route-option-title">
                       <span className="route-option-badge alternative-badge">Next Train</span>
-                      <span className="transfer-rating-badge transfer-rating-likely">
-                        ✅ LIKELY
+                      <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                        LIKELY
                       </span>
                     </div>
                     <div className="route-option-time">
@@ -1020,7 +1032,7 @@ function App() {
                     <span> • {routeResult.alternatives[0].num_transfers} {routeResult.alternatives[0].num_transfers === 1 ? 'transfer' : 'transfers'}</span>
                   </div>
 
-                  <div className="grouped-segments-list">
+                  <div className="grouped-segments-list" role="list" aria-label="Alternative route segments">
                     {groupSegmentsByLine(routeResult.alternatives[0].segments).map((group, idx) => (
                       <GroupedSegmentDisplay
                         key={`alt-${idx}`}
@@ -1055,8 +1067,8 @@ function App() {
 
           {/* Walking Route Result */}
           {result && !sameLineRoute?.is_same_line && !routeResult && (
-            <div className="result-card">
-              <h2 className="result-card-title text-accent">🚶 Walking Route</h2>
+            <div className="result-card" role="article" aria-label="Walking route">
+              <h2 className="result-card-title text-accent">Walking Route</h2>
 
               <p className="result-card-subtitle">
                 <strong>{result.station_1.name}</strong> → <strong>{result.station_2.name}</strong>
@@ -1067,7 +1079,7 @@ function App() {
                   {formatDuration(result.duration_minutes)}
                 </div>
                 <div className="time-meta">
-                  📏 {result.distance_km} km
+                  {result.distance_km} km
                 </div>
               </div>
             </div>
