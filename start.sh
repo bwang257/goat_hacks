@@ -1,9 +1,11 @@
 #!/bin/bash
 
 # MBTA Real-Time Transfer Helper - Startup Script
+# With Transfer Rating System
 
 echo "================================================"
 echo "  MBTA Real-Time Transfer Helper"
+echo "  with Transfer Rating System"
 echo "================================================"
 echo ""
 
@@ -18,10 +20,14 @@ cd backend
 # Activate virtual environment if it exists
 if [ -d "venv" ]; then
     source venv/bin/activate
-    echo "  Using virtual environment"
+    echo "  ✓ Using virtual environment"
+else
+    echo "  ⚠️  Warning: Virtual environment not found"
 fi
 
-python3 main.py &
+# Start backend with uvicorn
+echo "  Starting FastAPI with uvicorn..."
+uvicorn main:app --port 8000 --reload &
 BACKEND_PID=$!
 echo "✓ Backend started (PID: $BACKEND_PID)"
 
@@ -39,10 +45,16 @@ echo "✓ Frontend started (PID: $FRONTEND_PID)"
 
 echo ""
 echo "================================================"
-echo "  Services are running!"
+echo "  🚀 Services are running!"
 echo "================================================"
 echo "  Backend:  http://localhost:8000"
 echo "  Frontend: http://localhost:5173"
+echo ""
+echo "  Features enabled:"
+echo "    ✓ Smart transfer buffers"
+echo "    ✓ Transfer ratings (LIKELY/RISKY/UNLIKELY)"
+echo "    ✓ Alternative route suggestions"
+echo "    ✓ Real-time MBTA integration"
 echo ""
 echo "  Press Ctrl+C to stop all services"
 echo "================================================"

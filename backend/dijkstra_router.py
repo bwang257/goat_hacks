@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from route_planner import Route, RouteSegment
+from transfer_analyzer import calculate_transfer_time, rate_transfer
 
 @dataclass
 class DijkstraNode:
@@ -214,12 +215,18 @@ class DijkstraRouter:
 
                 # Check if this is a transfer
                 is_transfer = (current_line is not None and line_name != current_line)
+                transfer_buffer_seconds = 0
                 if is_transfer:
                     num_transfers += 1
-                    # Add minimum transfer time (2 minutes)
-                    current_time += timedelta(minutes=2)
+                    # Calculate dynamic transfer buffer based on station and lines
+                    transfer_buffer_seconds = calculate_transfer_time(
+                        station_id=from_station,
+                        from_line=current_line,
+                        to_line=line_name
+                    )
+                    current_time += timedelta(seconds=transfer_buffer_seconds)
                     if debug:
-                        print(f"  Transfer from {current_line} to {line_name} (+2 min)")
+                        print(f"  Transfer from {current_line} to {line_name} (+{transfer_buffer_seconds/60:.1f} min)")
 
                 # Get next train departure
                 try:
@@ -242,10 +249,22 @@ class DijkstraRouter:
                             # Use static travel time for arrival estimate
                             arr_time = dep_time + timedelta(seconds=static_travel_time)
 
+                            # Calculate transfer rating if this is a transfer
+                            transfer_rating = None
+                            slack_time = None
+                            if is_transfer and transfer_buffer_seconds > 0:
+                                # Slack time = available time - required buffer
+                                # Available time is the wait_time we calculated
+                                # But we need to account for the buffer we already added
+                                slack_time = wait_time - transfer_buffer_seconds
+                                transfer_rating = rate_transfer(slack_time).value
+
                             if debug:
                                 print(f"  Next train: {dep_time.strftime('%I:%M %p')} (wait {wait_time/60:.1f} min)")
                                 print(f"  Travel time: {static_travel_time/60:.1f} min")
                                 print(f"  Status: {next_train.get('status', 'Scheduled')}")
+                                if is_transfer:
+                                    print(f"  Transfer rating: {transfer_rating} (slack: {slack_time/60:.1f} min)")
 
                             segment = RouteSegment(
                                 from_station=from_station,
@@ -257,7 +276,10 @@ class DijkstraRouter:
                                 distance_meters=edge.get("distance_meters", 0),
                                 departure_time=dep_time,
                                 arrival_time=arr_time,
-                                status=next_train.get("status", "Scheduled")
+                                status=next_train.get("status", "Scheduled"),
+                                transfer_rating=transfer_rating,
+                                slack_time_seconds=slack_time,
+                                buffer_seconds=transfer_buffer_seconds if is_transfer else None
                             )
 
                             current_time = arr_time
@@ -389,3 +411,116 @@ class DijkstraRouter:
         route = await self.enrich_with_realtime(path, departure_time, mbta_client, debug=debug)
 
         return route
+
+    async def suggest_alternatives(
+        self,
+        primary_route: Route,
+        start_station_id: str,
+        end_station_id: str,
+        mbta_client,
+        max_alternatives: int = 3,
+        debug: bool = False
+    ) -> List[Route]:
+        """
+        Suggest alternative routes when the primary route has risky/unlikely transfers.
+
+        Finds alternatives by trying later departures, aiming for routes where
+        all transfers are rated as "likely".
+
+        Args:
+            primary_route: The original route to improve upon
+            start_station_id: Starting station ID
+            end_station_id: Destination station ID
+            mbta_client: MBTA API client for real-time data
+            max_alternatives: Maximum number of alternatives to return (default: 3)
+            debug: Print debug information
+
+        Returns:
+            List of alternative Route objects, sorted by total journey time
+        """
+
+        if debug:
+            print(f"\n{'='*60}")
+            print(f"SEARCHING FOR ALTERNATIVE ROUTES")
+            print(f"{'='*60}")
+
+        # Check if primary route has risky/unlikely transfers
+        has_risky_transfers = any(
+            seg.transfer_rating in ["risky", "unlikely"]
+            for seg in primary_route.segments
+            if seg.transfer_rating is not None
+        )
+
+        if not has_risky_transfers:
+            if debug:
+                print("Primary route has no risky transfers - no alternatives needed")
+            return []
+
+        if debug:
+            print(f"Found risky transfers in primary route")
+            for seg in primary_route.segments:
+                if seg.transfer_rating in ["risky", "unlikely"]:
+                    print(f"  {self.get_station_name(seg.from_station)}: {seg.transfer_rating}")
+
+        alternatives = []
+
+        # Try departures at 5, 10, and 15 minutes later
+        base_departure = primary_route.departure_time
+        delay_increments = [300, 600, 900]  # 5, 10, 15 minutes in seconds
+
+        for delay_seconds in delay_increments:
+            if len(alternatives) >= max_alternatives:
+                break
+
+            adjusted_departure = base_departure + timedelta(seconds=delay_seconds)
+
+            if debug:
+                print(f"\nTrying departure at {adjusted_departure.strftime('%I:%M %p')} (+{delay_seconds/60:.0f} min)")
+
+            try:
+                # Find route with adjusted departure time
+                alt_route = await self.find_route(
+                    start_station_id=start_station_id,
+                    end_station_id=end_station_id,
+                    departure_time=adjusted_departure,
+                    mbta_client=mbta_client,
+                    debug=False  # Don't spam debug output
+                )
+
+                if not alt_route:
+                    if debug:
+                        print("  No route found")
+                    continue
+
+                # Check if all transfers are "likely"
+                all_transfers_likely = all(
+                    seg.transfer_rating == "likely" or seg.transfer_rating is None
+                    for seg in alt_route.segments
+                )
+
+                if all_transfers_likely:
+                    alternatives.append(alt_route)
+                    if debug:
+                        print(f"  ✓ Alternative found - all transfers LIKELY")
+                        print(f"    Total time: {alt_route.total_time_seconds/60:.1f} min")
+                        print(f"    Arrival: {alt_route.arrival_time.strftime('%I:%M %p')}")
+                else:
+                    if debug:
+                        risky_count = sum(
+                            1 for seg in alt_route.segments
+                            if seg.transfer_rating in ["risky", "unlikely"]
+                        )
+                        print(f"  ✗ Still has {risky_count} risky transfer(s)")
+
+            except Exception as e:
+                if debug:
+                    print(f"  Error finding alternative: {e}")
+                continue
+
+        # Sort alternatives by total journey time (fastest first)
+        alternatives.sort(key=lambda r: r.total_time_seconds)
+
+        if debug:
+            print(f"\nFound {len(alternatives)} alternative route(s)")
+
+        return alternatives[:max_alternatives]

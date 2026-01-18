@@ -18,6 +18,9 @@ class RouteSegment:
     departure_time: Optional[datetime] = None  # When this segment starts
     arrival_time: Optional[datetime] = None  # When this segment ends
     status: Optional[str] = None  # "On time", "Delayed", etc. for train segments
+    transfer_rating: Optional[str] = None  # "likely", "risky", "unlikely" for transfers
+    slack_time_seconds: Optional[float] = None  # Slack time available for transfers
+    buffer_seconds: Optional[int] = None  # Required buffer time for transfers
 
 @dataclass
 class Route:

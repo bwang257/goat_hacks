@@ -1,6 +1,19 @@
-# Quick Reference - Frontend Improvements
+# Quick Reference - MBTA Transfer Helper
 
-## What Changed?
+## 🚀 Quick Start
+
+**The easiest way to start the application:**
+```bash
+./start.sh
+```
+
+This single command starts both backend and frontend with all features enabled!
+
+For more details, see `QUICK_START.md`
+
+---
+
+## What Changed (Transfer Rating System Added)?
 
 ### ✅ Files Modified
 - `src/App.tsx` - Replaced inline styles with CSS classes

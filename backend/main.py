@@ -835,6 +835,9 @@ class RouteSegmentResponse(BaseModel):
     arrival_time: Optional[str] = None
     status: Optional[str] = None
     geometry_coordinates: Optional[List[List[float]]] = None
+    transfer_rating: Optional[str] = None  # "likely", "risky", or "unlikely"
+    slack_time_seconds: Optional[float] = None  # Slack time for transfers
+    buffer_seconds: Optional[int] = None  # Required buffer time for transfers
 
 class RouteResponse(BaseModel):
     segments: List[RouteSegmentResponse]
@@ -845,6 +848,8 @@ class RouteResponse(BaseModel):
     num_transfers: int
     departure_time: Optional[str] = None
     arrival_time: Optional[str] = None
+    has_risky_transfers: bool = False  # True if any transfer is risky/unlikely
+    alternatives: List['RouteResponse'] = []  # Alternative safer routes
 
 class RouteRequest(BaseModel):
     station_id_1: str
@@ -943,6 +948,29 @@ async def find_route(
             detail=f"No route found between {start_name} and {end_name}"
         )
 
+    # Check if route has risky transfers and suggest alternatives if needed
+    has_risky_transfers = any(
+        seg.transfer_rating in ["risky", "unlikely"]
+        for seg in route.segments
+        if seg.transfer_rating is not None
+    )
+
+    alternative_routes = []
+    if has_risky_transfers and use_realtime and mbta_client:
+        try:
+            # Get alternative routes with safer transfers
+            alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
+                primary_route=route,
+                start_station_id=station_id_1,
+                end_station_id=station_id_2,
+                mbta_client=mbta_client,
+                max_alternatives=3,
+                debug=False
+            )
+            alternative_routes = alt_routes
+        except Exception as e:
+            print(f"Error finding alternative routes: {e}")
+
     segments = []
     for seg in route.segments:
         seg_response = RouteSegmentResponse(
@@ -959,7 +987,10 @@ async def find_route(
             departure_time=seg.departure_time.isoformat() if seg.departure_time else None,
             arrival_time=seg.arrival_time.isoformat() if seg.arrival_time else None,
             status=seg.status,
-            geometry_coordinates=None # Initialize as None, will be filled if applicable
+            geometry_coordinates=None, # Initialize as None, will be filled if applicable
+            transfer_rating=seg.transfer_rating,
+            slack_time_seconds=seg.slack_time_seconds,
+            buffer_seconds=seg.buffer_seconds
         )
         
         if seg_response.type == "train" and seg_response.route_id:
@@ -996,7 +1027,47 @@ async def find_route(
                  print(f"Error calculating geometry for segment: {e}")
         
         segments.append(seg_response)
-    
+
+    # Convert alternative routes to responses
+    alternatives_response = []
+    for alt_route in alternative_routes:
+        alt_segments = []
+        for seg in alt_route.segments:
+            alt_seg = RouteSegmentResponse(
+                from_station_id=seg.from_station,
+                from_station_name=TRANSIT_GRAPH.get_station_name(seg.from_station) or "Unknown Station",
+                to_station_id=seg.to_station,
+                to_station_name=TRANSIT_GRAPH.get_station_name(seg.to_station) or "Unknown Station",
+                type=seg.type,
+                line=seg.line,
+                route_id=seg.route_id,
+                time_seconds=seg.time_seconds,
+                time_minutes=round(seg.time_seconds / 60, 1),
+                distance_meters=seg.distance_meters,
+                departure_time=seg.departure_time.isoformat() if seg.departure_time else None,
+                arrival_time=seg.arrival_time.isoformat() if seg.arrival_time else None,
+                status=seg.status,
+                geometry_coordinates=None,
+                transfer_rating=seg.transfer_rating,
+                slack_time_seconds=seg.slack_time_seconds,
+                buffer_seconds=seg.buffer_seconds
+            )
+            alt_segments.append(alt_seg)
+
+        alt_response = RouteResponse(
+            segments=alt_segments,
+            total_time_seconds=alt_route.total_time_seconds,
+            total_time_minutes=round(alt_route.total_time_seconds / 60, 1),
+            total_distance_meters=alt_route.total_distance_meters,
+            total_distance_km=round(alt_route.total_distance_meters / 1000, 2),
+            num_transfers=alt_route.num_transfers,
+            departure_time=alt_route.departure_time.isoformat() if alt_route.departure_time else None,
+            arrival_time=alt_route.arrival_time.isoformat() if alt_route.arrival_time else None,
+            has_risky_transfers=False,
+            alternatives=[]
+        )
+        alternatives_response.append(alt_response)
+
     return RouteResponse(
         segments=segments,
         total_time_seconds=route.total_time_seconds,
@@ -1005,7 +1076,9 @@ async def find_route(
         total_distance_km=round(route.total_distance_meters / 1000, 2),
         num_transfers=route.num_transfers,
         departure_time=route.departure_time.isoformat() if route.departure_time else None,
-        arrival_time=route.arrival_time.isoformat() if route.arrival_time else None
+        arrival_time=route.arrival_time.isoformat() if route.arrival_time else None,
+        has_risky_transfers=has_risky_transfers,
+        alternatives=alternatives_response
     )
 
 @app.get("/api/route/realtime", response_model=RouteResponse)

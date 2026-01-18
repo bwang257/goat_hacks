@@ -85,6 +85,9 @@ interface RouteSegment {
   arrival_time?: string;
   status?: string;
   geometry_coordinates?: [number, number][];
+  transfer_rating?: 'likely' | 'risky' | 'unlikely';
+  slack_time_seconds?: number;
+  buffer_seconds?: number;
 }
 
 interface RouteResult {
@@ -96,6 +99,94 @@ interface RouteResult {
   num_transfers: number;
   departure_time?: string;
   arrival_time?: string;
+  has_risky_transfers?: boolean;
+  alternatives?: RouteResult[];
+}
+
+// Grouped segment for Apple Maps-style display
+interface GroupedSegment {
+  type: 'train' | 'walk' | 'transfer';
+  line?: string;
+  route_id?: string;
+  segments: RouteSegment[];
+  fromStation: string;
+  toStation: string;
+  departureTime?: string;
+  arrivalTime?: string;
+  totalStops: number;
+  transfer_rating?: string;
+  intermediateStops?: string[];
+}
+
+// Helper function to group consecutive segments on the same line
+function groupSegmentsByLine(segments: RouteSegment[]): GroupedSegment[] {
+  const grouped: GroupedSegment[] = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+
+    if (seg.type === 'train') {
+      // Check if we can merge with the previous group
+      const lastGroup = grouped[grouped.length - 1];
+
+      if (lastGroup &&
+          lastGroup.type === 'train' &&
+          lastGroup.line === seg.line &&
+          lastGroup.route_id === seg.route_id) {
+        // Merge with previous group
+        lastGroup.segments.push(seg);
+        lastGroup.toStation = seg.to_station_name;
+        lastGroup.arrivalTime = seg.arrival_time;
+        lastGroup.totalStops += 1;
+        if (!lastGroup.intermediateStops) {
+          lastGroup.intermediateStops = [];
+        }
+        lastGroup.intermediateStops.push(seg.from_station_name);
+      } else {
+        // Create new group
+        grouped.push({
+          type: 'train',
+          line: seg.line,
+          route_id: seg.route_id,
+          segments: [seg],
+          fromStation: seg.from_station_name,
+          toStation: seg.to_station_name,
+          departureTime: seg.departure_time,
+          arrivalTime: seg.arrival_time,
+          totalStops: 1,
+          intermediateStops: []
+        });
+      }
+    } else if (seg.type === 'transfer') {
+      // Transfers get their own group
+      grouped.push({
+        type: 'transfer',
+        segments: [seg],
+        fromStation: seg.from_station_name,
+        toStation: seg.to_station_name,
+        totalStops: 0,
+        transfer_rating: seg.transfer_rating
+      });
+    } else if (seg.type === 'walk') {
+      // Walks get their own group
+      grouped.push({
+        type: 'walk',
+        segments: [seg],
+        fromStation: seg.from_station_name,
+        toStation: seg.to_station_name,
+        totalStops: 0
+      });
+    }
+  }
+
+  // Add final station to intermediate stops for each train group
+  grouped.forEach(group => {
+    if (group.type === 'train' && group.intermediateStops) {
+      group.intermediateStops.push(group.toStation);
+    }
+  });
+
+  return grouped;
 }
 
 // Custom marker icons for selected stations
@@ -353,6 +444,100 @@ function MapBoundsUpdater({
   return null;
 }
 
+// Component for displaying grouped segments in Apple Maps style
+function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
+  group: GroupedSegment;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const lineColors: { [key: string]: string } = {
+    'Red': '#DA291C',
+    'Orange': '#ED8B00',
+    'Blue': '#003DA5',
+    'Green': '#00843D',
+    'B': '#00843D',
+    'C': '#00843D',
+    'D': '#00843D',
+    'E': '#00843D',
+  };
+
+  const cleanLine = group.line?.replace(' Line', '').trim() || '';
+  const lineColor = lineColors[cleanLine] || '#666';
+
+  if (group.type === 'train') {
+    return (
+      <div className="grouped-segment" style={{ borderLeftColor: lineColor }}>
+        <div className="grouped-segment-header" onClick={onToggle}>
+          <div className="grouped-segment-line">
+            <span className="segment-badge" style={{ backgroundColor: lineColor }}>
+              {cleanLine}
+            </span>
+            <span className="grouped-segment-route">
+              {group.fromStation} → {group.toStation}
+            </span>
+          </div>
+          <div className="grouped-segment-info">
+            <span className="grouped-segment-stops">{group.totalStops} {group.totalStops === 1 ? 'stop' : 'stops'}</span>
+            <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
+          </div>
+        </div>
+        {group.departureTime && (
+          <div className="grouped-segment-time">
+            🕐 {formatTime(group.departureTime)} → {group.arrivalTime ? formatTime(group.arrivalTime) : '—'}
+          </div>
+        )}
+        {isExpanded && group.intermediateStops && group.intermediateStops.length > 0 && (
+          <div className="intermediate-stops">
+            {group.intermediateStops.map((stop, idx) => (
+              <div key={idx} className="intermediate-stop">
+                <span className="stop-dot" style={{ backgroundColor: lineColor }}></span>
+                <span className="stop-name">{stop}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  } else if (group.type === 'transfer') {
+    return (
+      <div className="grouped-segment transfer-segment">
+        <div className="grouped-segment-header">
+          <span className="segment-badge" style={{ backgroundColor: '#FFA500' }}>
+            🔄 Transfer
+          </span>
+          <span className="grouped-segment-route">at {group.fromStation}</span>
+        </div>
+        {group.transfer_rating && (
+          <div className={`transfer-rating transfer-rating-${group.transfer_rating}`}>
+            <span className="transfer-rating-icon">
+              {group.transfer_rating === 'likely' ? '✅' : group.transfer_rating === 'risky' ? '⚠️' : '🚫'}
+            </span>
+            <span className="transfer-rating-text">
+              {group.transfer_rating.toUpperCase()}
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  } else {
+    return (
+      <div className="grouped-segment walk-segment">
+        <div className="grouped-segment-header">
+          <span className="segment-badge" style={{ backgroundColor: '#0066cc' }}>
+            🚶 Walk
+          </span>
+          <span className="grouped-segment-route">
+            {group.fromStation} → {group.toStation}
+          </span>
+        </div>
+        <div className="grouped-segment-time">
+          {formatDuration(group.segments[0]?.time_minutes || 0)}
+        </div>
+      </div>
+    );
+  }
+}
+
 function App() {
   const [stations, setStations] = useState<Station[]>([]);
   const [startStation, setStartStation] = useState<Station | null>(null);
@@ -366,6 +551,7 @@ function App() {
   const [routeSegments, setRouteSegments] = useState<{ coordinates: [number, number][], color: string, opacity: number, dashArray: string | null }[]>([]);
   const [routeShapes, setRouteShapes] = useState<{ [key: string]: { id: string; coordinates: [number, number][]; }[] }>({});
   const [walkingSpeed, setWalkingSpeed] = useState<number>(5.0); // km/h
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
 
   // Helper function to get line color
   const getLineColor = (lineName: string) => {
@@ -610,55 +796,87 @@ function App() {
     <div className="app-container">
       {/* Sidebar */}
       <div className="sidebar">
-        <div className="header">
-          <h1 className="header-title">🚇 MBTA Route Finder</h1>
-          <p className="header-subtitle">
-            Select two stations to find the best route between them
-          </p>
-        </div>
+        {/* Show route view when route is available */}
+        {(routeResult || sameLineRoute?.is_same_line || result) ? (
+          <>
+            <div className="route-header">
+              <button
+                onClick={clearSelection}
+                className="back-button"
+                aria-label="Back to station selection"
+              >
+                <span className="back-arrow">←</span>
+                <span>Back</span>
+              </button>
+              <div className="route-title">
+                <div className="mbta-t-logo">T</div>
+                <div>
+                  <div className="route-from-to">
+                    {startStation?.name} → {endStation?.name}
+                  </div>
+                  <div className="route-subtitle">Trip Options</div>
+                </div>
+              </div>
+            </div>
+            <div className="results-container route-results-fullscreen">
+          </>
+        ) : (
+          <>
+            <div className="header">
+              <div className="header-logo">
+                <div className="mbta-t-logo-large">T</div>
+                <div>
+                  <h1 className="header-title">MBTA Route Finder</h1>
+                  <p className="header-subtitle">
+                    Select two stations to find the best route between them
+                  </p>
+                </div>
+              </div>
+            </div>
 
-        {/* Start Station */}
-        <StationSearch
-          label="From Station"
-          onSelect={setStartStation}
-          selectedStation={startStation}
-        />
+            {/* Start Station */}
+            <StationSearch
+              label="From Station"
+              onSelect={setStartStation}
+              selectedStation={startStation}
+            />
 
-        {/* End Station */}
-        <StationSearch
-          label="To Station"
-          onSelect={setEndStation}
-          selectedStation={endStation}
-        />
+            {/* End Station */}
+            <StationSearch
+              label="To Station"
+              onSelect={setEndStation}
+              selectedStation={endStation}
+            />
 
-        {/* Walking Speed Control */}
-        <div className="control-group">
-          <label className="control-label">
-            Walking Speed: {walkingSpeed.toFixed(1)} km/h
-          </label>
-          <input
-            type="range"
-            min="2"
-            max="8"
-            step="0.5"
-            value={walkingSpeed}
-            onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
-            className="range-slider"
-          />
-          <div className="range-labels">
-            <span>🚶 Slow (2 km/h)</span>
-            <span>🏃 Fast (8 km/h)</span>
-          </div>
-        </div>
+            {/* Walking Speed Control */}
+            <div className="control-group">
+              <label className="control-label" htmlFor="walking-speed">
+                Walking Speed: {walkingSpeed.toFixed(1)} km/h
+              </label>
+              <input
+                id="walking-speed"
+                type="range"
+                min="2"
+                max="8"
+                step="0.5"
+                value={walkingSpeed}
+                onChange={(e) => setWalkingSpeed(parseFloat(e.target.value))}
+                className="range-slider"
+                aria-label="Walking speed"
+                aria-valuemin={2}
+                aria-valuemax={8}
+                aria-valuenow={walkingSpeed}
+              />
+              <div className="range-labels">
+                <span>Slow (2 km/h)</span>
+                <span>Fast (8 km/h)</span>
+              </div>
+            </div>
 
-        <button
-          onClick={clearSelection}
-          className="button button-secondary"
-        >
-          Clear Selection
-        </button>
+            </>
+        )}
 
-        {/* Results Container */}
+        {/* Results Container - Always shown */}
         <div className="results-container">
           {/* Same-line route result */}
           {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (
@@ -717,105 +935,121 @@ function App() {
             </div>
           )}
 
-          {/* Comprehensive Route Result */}
+          {/* Comprehensive Route Result - Apple Maps Style */}
           {routeResult && !sameLineRoute?.is_same_line && (
             <div className="result-card">
               <h2 className="result-card-title text-accent">
-                ✨ Trip Plan
+                ✨ Trip Options
               </h2>
 
               <p className="result-card-subtitle">
                 <strong>{startStation?.name}</strong> → <strong>{endStation?.name}</strong>
               </p>
 
-              <div className="time-display">
-                <div className="time-value">
-                  {formatDuration(routeResult.total_time_minutes)}
+              {/* Primary Route Option */}
+              <div className="route-option">
+                <div className="route-option-header">
+                  <div className="route-option-title">
+                    <span className="route-option-badge">Earliest</span>
+                    {routeResult.has_risky_transfers && (
+                      <span className={`transfer-rating-badge transfer-rating-${
+                        routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? 'unlikely' :
+                        routeResult.segments.find(s => s.transfer_rating === 'risky') ? 'risky' : 'likely'
+                      }`}>
+                        {routeResult.segments.find(s => s.transfer_rating === 'unlikely') ? '🚫 UNLIKELY' :
+                         routeResult.segments.find(s => s.transfer_rating === 'risky') ? '⚠️ RISKY' : '✅ LIKELY'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="route-option-time">
+                    {formatDuration(routeResult.total_time_minutes)}
+                  </div>
                 </div>
-                <div className="time-meta">
-                  {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}
+
+                <div className="route-option-meta">
                   {routeResult.departure_time && routeResult.arrival_time && (
-                    <span> • {formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
+                    <span>{formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
                   )}
+                  <span> • {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
+                </div>
+
+                <div className="grouped-segments-list">
+                  {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
+                    <GroupedSegmentDisplay
+                      key={idx}
+                      group={group}
+                      isExpanded={expandedGroups.has(idx)}
+                      onToggle={() => {
+                        const newExpanded = new Set(expandedGroups);
+                        if (newExpanded.has(idx)) {
+                          newExpanded.delete(idx);
+                        } else {
+                          newExpanded.add(idx);
+                        }
+                        setExpandedGroups(newExpanded);
+                      }}
+                    />
+                  ))}
                 </div>
               </div>
 
-              <div className="segment-list">
-                {routeResult.segments.map((seg, idx) => {
-                  const lineColors: { [key: string]: string } = {
-                    'Red': '#DA291C',
-                    'Orange': '#ED8B00',
-                    'Blue': '#003DA5',
-                    'Green': '#00843D',
-                    'B': '#00843D',
-                    'C': '#00843D',
-                    'D': '#00843D',
-                    'E': '#00843D',
-                  };
-                  const cleanLine = seg.line?.replace(' Line', '').trim() || '';
-                  const lineColor = lineColors[cleanLine] || '#666';
-                  const borderColor = seg.type === 'train' ? lineColor : seg.type === 'transfer' ? '#FFA500' : '#0066cc';
-
-                  return (
-                    <div key={idx} className="segment-item" style={{
-                      borderLeftColor: borderColor
-                    }}>
-                      <div className="segment-header">
-                        <div>
-                          {seg.type === 'train' && seg.line && (
-                            <span className="segment-badge" style={{
-                              backgroundColor: lineColor
-                            }}>
-                              {cleanLine}
-                            </span>
-                          )}
-                          {seg.type === 'transfer' && (
-                            <span className="segment-badge" style={{
-                              backgroundColor: '#FFA500'
-                            }}>
-                              🔄 Transfer
-                            </span>
-                          )}
-                          {seg.type === 'walk' && (
-                            <span className="segment-badge" style={{
-                              backgroundColor: '#0066cc'
-                            }}>
-                              🚶 Walk
-                            </span>
-                          )}
-                        </div>
-                        <div className="segment-time">
-                          {formatDuration(seg.time_minutes)}
-                        </div>
-                      </div>
-
-                      <div className="segment-station">
-                        <span className="segment-station-name">{seg.from_station_name}</span>
-                        {seg.departure_time && (
-                          <span className="segment-station-time">
-                            {formatTime(seg.departure_time)}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="segment-station">
-                        <span className="segment-station-name">{seg.to_station_name}</span>
-                        {seg.arrival_time && (
-                          <span className="segment-station-time">
-                            {formatTime(seg.arrival_time)}
-                          </span>
-                        )}
-                      </div>
-
-                      {seg.status && seg.status !== 'Scheduled' && (
-                        <div className={`segment-status ${seg.status === 'Delayed' ? 'segment-status-delayed' : 'segment-status-normal'}`}>
-                          {seg.status}
-                        </div>
+              {/* Alternative Route Option (Safest) */}
+              {routeResult.alternatives && routeResult.alternatives.length > 0 && (
+                <div className="route-option alternative-route-option">
+                  <div className="route-option-header">
+                    <div className="route-option-title">
+                      <span className="route-option-badge alternative-badge">Next Train</span>
+                      <span className="transfer-rating-badge transfer-rating-likely">
+                        ✅ LIKELY
+                      </span>
+                    </div>
+                    <div className="route-option-time">
+                      {formatDuration(routeResult.alternatives[0].total_time_minutes)}
+                      {routeResult.alternatives[0].total_time_minutes > routeResult.total_time_minutes && (
+                        <span className="time-difference-inline">
+                          (+{(routeResult.alternatives[0].total_time_minutes - routeResult.total_time_minutes).toFixed(0)}m)
+                        </span>
                       )}
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+
+                  <div className="route-option-meta">
+                    {routeResult.alternatives[0].departure_time && routeResult.alternatives[0].arrival_time && (
+                      <span>{formatTime(routeResult.alternatives[0].departure_time)} - {formatTime(routeResult.alternatives[0].arrival_time)}</span>
+                    )}
+                    <span> • {routeResult.alternatives[0].num_transfers} {routeResult.alternatives[0].num_transfers === 1 ? 'transfer' : 'transfers'}</span>
+                  </div>
+
+                  <div className="grouped-segments-list">
+                    {groupSegmentsByLine(routeResult.alternatives[0].segments).map((group, idx) => (
+                      <GroupedSegmentDisplay
+                        key={`alt-${idx}`}
+                        group={group}
+                        isExpanded={expandedGroups.has(1000 + idx)}
+                        onToggle={() => {
+                          const newExpanded = new Set(expandedGroups);
+                          const groupId = 1000 + idx;
+                          if (newExpanded.has(groupId)) {
+                            newExpanded.delete(groupId);
+                          } else {
+                            newExpanded.add(groupId);
+                          }
+                          setExpandedGroups(newExpanded);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Additional Alternatives */}
+              {routeResult.alternatives && routeResult.alternatives.length > 1 && (
+                <div className="more-alternatives">
+                  <button className="more-alternatives-button">
+                    View {routeResult.alternatives.length - 1} more {routeResult.alternatives.length - 1 === 1 ? 'option' : 'options'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -890,99 +1124,111 @@ function App() {
             );
           })}
 
-          {/* Show all stations with T logo markers */}
-          {stations.map(station => (
-            <Marker
-              key={station.id}
-              position={[station.latitude, station.longitude]}
-              icon={createTMarker(station.lines)}
-              eventHandlers={{
-                click: () => {
-                  // Allow clicking on station markers to select them
-                  if (!startStation) {
-                    setStartStation(station);
-                  } else if (!endStation) {
-                    setEndStation(station);
+          {/* Show all stations with T logo markers - show route stations when route active */}
+          {stations.map(station => {
+            // Hide non-route stations when route is displayed
+            if (routeResult && startStation && endStation) {
+              const isOnRoute = routeResult.segments.some(seg =>
+                seg.from_station_id === station.id || seg.to_station_id === station.id
+              );
+              if (!isOnRoute && station.id !== startStation.id && station.id !== endStation.id) {
+                return null;
+              }
+            }
+
+            return (
+              <Marker
+                key={station.id}
+                position={[station.latitude, station.longitude]}
+                icon={createTMarker(station.lines)}
+                eventHandlers={{
+                  click: () => {
+                    // Allow clicking on station markers to select them
+                    if (!startStation) {
+                      setStartStation(station);
+                    } else if (!endStation) {
+                      setEndStation(station);
+                    }
                   }
-                }
-              }}
-            >
-              <Popup>
-                <div>
-                  <strong>{station.name}</strong><br />
-                  <div style={{ marginTop: '4px' }}>
-                    {(() => {
-                      const getLineColor = (line: string) => {
-                        const cleanLine = line.replace(' Line', '').trim();
-                        const lineColors: { [key: string]: string } = {
-                          'Red': '#DA291C',
-                          'Orange': '#ED8B00',
-                          'Blue': '#003DA5',
-                          'Green': '#00843D',
-                          'Green-B': '#00843D',
-                          'Green-C': '#00843D',
-                          'Green-D': '#00843D',
-                          'Green-E': '#00843D',
-                          'B': '#00843D',
-                          'C': '#00843D',
-                          'D': '#00843D',
-                          'E': '#00843D',
-                          'Silver': '#7C878E',
-                          'Mattapan': '#DA291C'
+                }}
+              >
+                <Popup>
+                  <div>
+                    <strong>{station.name}</strong><br />
+                    <div style={{ marginTop: '4px' }}>
+                      {(() => {
+                        const getLineColor = (line: string) => {
+                          const cleanLine = line.replace(' Line', '').trim();
+                          const lineColors: { [key: string]: string } = {
+                            'Red': '#DA291C',
+                            'Orange': '#ED8B00',
+                            'Blue': '#003DA5',
+                            'Green': '#00843D',
+                            'Green-B': '#00843D',
+                            'Green-C': '#00843D',
+                            'Green-D': '#00843D',
+                            'Green-E': '#00843D',
+                            'B': '#00843D',
+                            'C': '#00843D',
+                            'D': '#00843D',
+                            'E': '#00843D',
+                            'Silver': '#7C878E',
+                            'Mattapan': '#DA291C'
+                          };
+                          // Color all commuter rail lines purple
+                          const commuterRailLines = [
+                            'Framingham/Worcester', 'Providence/Stoughton', 'Lowell', 'Haverhill',
+                            'Fitchburg', 'Newburyport/Rockport', 'Kingston', 'Greenbush',
+                            'Needham', 'Fairmount', 'Franklin/Foxboro', 'Fall River/New Bedford',
+                            'Foxboro Event Service'
+                          ];
+                          if (cleanLine.startsWith('CR-') || commuterRailLines.some(cr => cleanLine.startsWith(cr))) {
+                            return '#80276C'; // Purple for commuter rail
+                          }
+                          return lineColors[cleanLine] || '#000000';
                         };
-                        // Color all commuter rail lines purple
-                        const commuterRailLines = [
-                          'Framingham/Worcester', 'Providence/Stoughton', 'Lowell', 'Haverhill',
-                          'Fitchburg', 'Newburyport/Rockport', 'Kingston', 'Greenbush',
-                          'Needham', 'Fairmount', 'Franklin/Foxboro', 'Fall River/New Bedford',
-                          'Foxboro Event Service'
-                        ];
-                        if (cleanLine.startsWith('CR-') || commuterRailLines.some(cr => cleanLine.startsWith(cr))) {
-                          return '#80276C'; // Purple for commuter rail
-                        }
-                        return lineColors[cleanLine] || '#000000';
-                      };
-                      
-                      // Deduplicate by color - keep only one line per color
-                      const uniqueLinesByColor = new Map<string, string>();
-                      station.lines.forEach(line => {
-                        const color = getLineColor(line);
-                        if (!uniqueLinesByColor.has(color)) {
-                          uniqueLinesByColor.set(color, line);
-                        }
-                      });
-                      
-                      return Array.from(uniqueLinesByColor.values()).map((line, idx) => {
-                        const cleanLine = line.replace(' Line', '').trim();
-                        const color = getLineColor(line);
-                        return (
-                          <span
-                            key={idx}
-                            style={{
-                              display: 'inline-block',
-                              backgroundColor: color,
-                              color: 'white',
-                              padding: '2px 6px',
-                              borderRadius: '3px',
-                              fontSize: '11px',
-                              fontWeight: 'bold',
-                              marginRight: '4px',
-                              marginBottom: '2px'
-                            }}
-                          >
-                            {cleanLine}
-                          </span>
-                        );
-                      });
-                    })()}
+
+                        // Deduplicate by color - keep only one line per color
+                        const uniqueLinesByColor = new Map<string, string>();
+                        station.lines.forEach(line => {
+                          const color = getLineColor(line);
+                          if (!uniqueLinesByColor.has(color)) {
+                            uniqueLinesByColor.set(color, line);
+                          }
+                        });
+
+                        return Array.from(uniqueLinesByColor.values()).map((line, idx) => {
+                          const cleanLine = line.replace(' Line', '').trim();
+                          const color = getLineColor(line);
+                          return (
+                            <span
+                              key={idx}
+                              style={{
+                                display: 'inline-block',
+                                backgroundColor: color,
+                                color: 'white',
+                                padding: '2px 6px',
+                                borderRadius: '3px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                marginRight: '4px',
+                                marginBottom: '2px'
+                              }}
+                            >
+                              {cleanLine}
+                            </span>
+                          );
+                        });
+                      })()}
+                    </div>
+                    <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
+                      {station.municipality}
+                    </div>
                   </div>
-                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
-                    {station.municipality}
-                  </div>
-                </div>
-              </Popup>
-            </Marker>
-          ))}
+                </Popup>
+              </Marker>
+            );
+          })}
 
           {/* Same-line route line */}
           {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (
