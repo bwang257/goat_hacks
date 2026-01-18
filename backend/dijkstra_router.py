@@ -291,8 +291,48 @@ class DijkstraRouter:
                             dep_time = next_train["departure_time"]
                             wait_time = (dep_time - current_time).total_seconds()
 
-                            # Use static travel time for arrival estimate
-                            arr_time = dep_time + timedelta(seconds=static_travel_time)
+                            # Get actual arrival time at destination stop if available
+                            # The arrival_time in next_train is for the from_station, not to_station
+                            # So we need to get the arrival time at the destination stop
+                            arr_time = None
+                            actual_travel_time = static_travel_time
+                            
+                            # Try to get arrival time at destination stop using trip_id
+                            if mbta_client and next_train.get("trip_id") and to_station:
+                                try:
+                                    # Get predictions for the destination stop with the same trip
+                                    dest_predictions = await mbta_client.get_predictions(
+                                        stop_id=to_station,
+                                        trip_id=next_train["trip_id"],
+                                        limit=1
+                                    )
+                                    
+                                    if dest_predictions:
+                                        dest_pred = dest_predictions[0]
+                                        dest_attrs = dest_pred.get("attributes", {})
+                                        dest_arrival = dest_attrs.get("arrival_time")
+                                        
+                                        if dest_arrival:
+                                            if isinstance(dest_arrival, str):
+                                                if dest_arrival.endswith('Z'):
+                                                    dest_arrival = dest_arrival.replace('Z', '+00:00')
+                                                arr_time = datetime.fromisoformat(dest_arrival)
+                                            elif isinstance(dest_arrival, datetime):
+                                                arr_time = dest_arrival
+                                            
+                                            # Ensure arrival time is after departure time
+                                            if arr_time and arr_time > dep_time:
+                                                actual_travel_time = (arr_time - dep_time).total_seconds()
+                                            else:
+                                                arr_time = None
+                                except Exception as e:
+                                    if debug:
+                                        print(f"  Could not get arrival time at destination: {e}")
+                            
+                            # Fallback to static estimate if we couldn't get actual arrival time
+                            if arr_time is None:
+                                arr_time = dep_time + timedelta(seconds=static_travel_time)
+                                actual_travel_time = static_travel_time
 
                             # Calculate transfer rating if this is a transfer
                             transfer_rating = None
@@ -317,7 +357,7 @@ class DijkstraRouter:
                                 type="train",
                                 line=line_name,
                                 route_id=route_id,
-                                time_seconds=(arr_time - dep_time).total_seconds(),
+                                time_seconds=actual_travel_time,
                                 distance_meters=edge.get("distance_meters", 0),
                                 departure_time=dep_time,
                                 arrival_time=arr_time,

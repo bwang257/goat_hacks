@@ -1113,6 +1113,158 @@ function App() {
     }
   }, [startStation, endStation, walkingSpeed]);
 
+  // Background refresh: Update route times every minute without disrupting UX
+  useEffect(() => {
+    // Only set up refresh if we have a route result
+    if (!routeResult && !sameLineRoute) {
+      return;
+    }
+
+    if (!startStation || !endStation) {
+      return;
+    }
+
+    // Refresh function that updates data silently (no loading state)
+    const refreshRoute = async () => {
+      // Use current stations from closure
+      const currentStart = startStation;
+      const currentEnd = endStation;
+      const currentWalkingSpeed = walkingSpeed;
+      
+      if (!currentStart || !currentEnd) {
+        return;
+      }
+      try {
+        // Fetch updated route data without showing loading state
+        const routeResponse = await fetch(`${API_BASE}/api/route`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            station_id_1: currentStart.id,
+            station_id_2: currentEnd.id,
+            prefer_fewer_transfers: true,
+            use_realtime: true,
+            walking_speed_kmh: currentWalkingSpeed * 1.60934 // Convert mph to km/h
+          })
+        });
+
+        if (routeResponse.ok) {
+          const routeData = await routeResponse.json();
+
+          // Check if this is a same-line route
+          const trainSegments = routeData.segments.filter((s: any) => s.type === 'train');
+          const distinctLines = new Set(trainSegments.map((s: any) => s.line));
+          const hasTransfers = routeData.segments.some((s: any) => s.type === 'transfer');
+
+          if (trainSegments.length > 0 && distinctLines.size === 1 && !hasTransfers) {
+            // Try to get same-line route details
+            try {
+              const sameLineResponse = await fetch(
+                `${API_BASE}/api/realtime/same-line?station_id_1=${currentStart.id}&station_id_2=${currentEnd.id}&num_trains=3`
+              );
+
+              if (sameLineResponse.ok) {
+                const sameLineData = await sameLineResponse.json();
+                if (sameLineData.is_same_line) {
+                  // Smoothly update same-line route
+                  setSameLineRoute(sameLineData);
+                  return;
+                }
+              }
+            } catch (err) {
+              // Continue with route result
+            }
+          }
+
+          // Get alternatives if needed
+          let alternatives = routeData.alternatives || [];
+          if (alternatives.length < 2) {
+            try {
+              const altResponse = await fetch(`${API_BASE}/api/route/alternatives?offset=${alternatives.length}&limit=${2 - alternatives.length}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  station_id_1: currentStart.id,
+                  station_id_2: currentEnd.id,
+                  prefer_fewer_transfers: true,
+                  use_realtime: true,
+                  walking_speed_kmh: currentWalkingSpeed * 1.60934
+                })
+              });
+
+              if (altResponse.ok) {
+                const additionalRoutes: RouteResult[] = await altResponse.json();
+                if (additionalRoutes.length > 0) {
+                  alternatives = [...alternatives, ...additionalRoutes].slice(0, 2);
+                }
+              }
+            } catch (err) {
+              // Silently fail - keep existing alternatives
+            }
+          }
+
+          // Smoothly update route result with new data
+          // This will automatically update transfer ratings if they changed
+          setRouteResult({
+            ...routeData,
+            alternatives: alternatives.slice(0, 2)
+          });
+
+          // Update route segments for map display if geometry changed
+          const displaySegments: {
+            coordinates: [number, number][],
+            color: string,
+            opacity: number,
+            dashArray: string | null
+          }[] = [];
+
+          for (const seg of routeData.segments) {
+            const fromStation = stations.find(s => s.id === seg.from_station_id);
+            const toStation = stations.find(s => s.id === seg.to_station_id);
+
+            if (fromStation && toStation) {
+              const coords: [number, number][] = seg.geometry_coordinates && seg.geometry_coordinates.length > 0
+                ? seg.geometry_coordinates as [number, number][]
+                : [
+                  [fromStation.latitude, fromStation.longitude],
+                  [toStation.latitude, toStation.longitude]
+                ];
+
+              if (seg.type === 'train' && seg.line) {
+                displaySegments.push({
+                  coordinates: coords,
+                  color: getLineColor(seg.line),
+                  opacity: 0.8,
+                  dashArray: null
+                });
+              } else {
+                displaySegments.push({
+                  coordinates: coords,
+                  color: '#0066cc',
+                  opacity: 0.6,
+                  dashArray: '10, 10'
+                });
+              }
+            }
+          }
+
+          setRouteSegments(displaySegments);
+        }
+      } catch (err) {
+        // Silently fail - don't disrupt user experience
+        console.error('Background route refresh failed:', err);
+      }
+    };
+
+    // Set up interval to refresh every minute (60000ms)
+    const refreshInterval = setInterval(refreshRoute, 60000);
+
+    // Cleanup interval on unmount or when dependencies change
+    return () => {
+      clearInterval(refreshInterval);
+    };
+  }, [routeResult, sameLineRoute, startStation, endStation, walkingSpeed]);
+
   // Load all stations on mount and hide initial loading screen
   useEffect(() => {
     const loadData = async () => {
