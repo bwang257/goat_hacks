@@ -116,6 +116,9 @@ interface GroupedSegment {
   totalStops: number;
   transfer_rating?: string;
   intermediateStops?: string[];
+  transfer_from_line?: string;  // Line transferring from
+  transfer_to_line?: string;    // Line transferring to
+  transfer_station_id?: string;  // Station ID for the transfer
 }
 
 // Helper function to normalize line names for grouping
@@ -196,6 +199,13 @@ function groupSegmentsByLine(segments: RouteSegment[]): GroupedSegment[] {
         continue;
       }
 
+      // Get lines from adjacent train segments
+      const prevTrainSeg = i > 0 ? segments[i - 1] : null;
+      const nextTrainSeg = i < segments.length - 1 ? segments[i + 1] : null;
+      
+      const fromLine = prevTrainSeg?.line || null;
+      const toLine = nextTrainSeg?.line || null;
+
       // Transfers get their own group
       grouped.push({
         type: 'transfer',
@@ -203,7 +213,10 @@ function groupSegmentsByLine(segments: RouteSegment[]): GroupedSegment[] {
         fromStation: seg.from_station_name,
         toStation: seg.to_station_name,
         totalStops: 0,
-        transfer_rating: seg.transfer_rating
+        transfer_rating: seg.transfer_rating,
+        transfer_from_line: fromLine || undefined,
+        transfer_to_line: toLine || undefined,
+        transfer_station_id: seg.from_station_id // Same as to_station_id for transfers
       });
     } else if (seg.type === 'walk') {
       // Walks get their own group
@@ -482,12 +495,175 @@ function MapBoundsUpdater({
   return null;
 }
 
+// Helper to get congestion color
+const getCongestionColor = (congestion: string): string => {
+  const congestionLower = congestion.toLowerCase();
+  if (congestionLower.includes('extreme') || congestionLower.includes('very high')) {
+    return '#dc2626';
+  } else if (congestionLower.includes('high')) {
+    return '#d97706';
+  } else if (congestionLower.includes('medium')) {
+    return '#eab308';
+  } else {
+    return '#059669';
+  }
+};
+
+// Congestion Badge Component
+function CongestionBadge({ congestion }: { congestion: string }) {
+  const color = getCongestionColor(congestion);
+  return (
+    <span 
+      className="congestion-badge" 
+      style={{
+        backgroundColor: `${color}15`,
+        color: color,
+        border: `1px solid ${color}`,
+        padding: '0.25rem 0.5rem',
+        borderRadius: 'var(--radius-full)',
+        fontSize: '0.75rem',
+        fontWeight: '600',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '0.25rem'
+      }}
+    >
+      {congestion}
+    </span>
+  );
+}
+
 // Component for displaying grouped segments in Apple Maps style
-function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
+function GroupedSegmentDisplay({ group, isExpanded, onToggle, transferStationData }: {
   group: GroupedSegment;
   isExpanded: boolean;
   onToggle: () => void;
+  transferStationData?: any;
 }) {
+  // Helper function to check if current time is peak hours
+  const isPeakHours = (): boolean => {
+    const now = new Date();
+    const hour = now.getHours();
+    const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+    
+    // Peak hours: Weekdays 7-9 AM and 4-7 PM
+    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+    const isMorningPeak = hour >= 7 && hour < 10;
+    const isEveningPeak = hour >= 16 && hour < 19;
+    
+    return isWeekday && (isMorningPeak || isEveningPeak);
+  };
+
+  // Helper function to match transfer segments to transfer_station_data.json
+  const getTransferInfo = (stationId: string, fromLine: string | undefined, toLine: string | undefined, stationName?: string) => {
+    // Debug: Check what we're receiving
+    if (!transferStationData) {
+      return null;
+    }
+    
+    if (!stationId && !stationName) {
+      return null;
+    }
+    
+    // Normalize line names first to check if we have valid lines
+    const normalizeLineForData = (line: string | undefined): string => {
+      if (!line) return '';
+      let normalized = normalizeLineName(line);
+      normalized = normalized.replace(/\s*Line\s*/gi, '').replace(/-/g, '').trim();
+      if (normalized === 'B' || normalized === 'C' || normalized === 'D' || normalized === 'E') {
+        normalized = 'Green';
+      }
+      return normalized;
+    };
+    
+    const fromLineNormalized = normalizeLineForData(fromLine);
+    const toLineNormalized = normalizeLineForData(toLine);
+    
+    // If we don't have valid line names, we can't match
+    if (!fromLineNormalized || !toLineNormalized) {
+      return null;
+    }
+    
+    // Try exact station ID match first
+    let stationData = transferStationData[stationId];
+    
+    // If not found, try searching by station name (fallback)
+    if (!stationData && stationName) {
+      const searchName = stationName.toLowerCase();
+      for (const [_id, data] of Object.entries(transferStationData)) {
+        const stationInfo = data as any;
+        if (stationInfo?.name?.toLowerCase() === searchName) {
+          stationData = stationInfo;
+          break;
+        }
+      }
+    }
+    
+    if (!stationData || !stationData.transfers) {
+      return null;
+    }
+    
+    // Try exact match first: "Red→Orange"
+    const transferKey = `${fromLineNormalized}→${toLineNormalized}`;
+    let transferInfo = stationData.transfers[transferKey];
+    
+    // If not found, try reverse lookup
+    if (!transferInfo) {
+      const reverseKey = `${toLineNormalized}→${fromLineNormalized}`;
+      transferInfo = stationData.transfers[reverseKey];
+    }
+    
+    // If still not found, try partial matches (e.g., Green B→Green C/D should match Green B→Green C/D)
+    if (!transferInfo && stationData.transfers) {
+      for (const [key, info] of Object.entries(stationData.transfers)) {
+        // Check if key contains both line names (in any order)
+        if ((key.includes(fromLineNormalized) || fromLineNormalized.includes(key.split('→')[0])) &&
+            (key.includes(toLineNormalized) || toLineNormalized.includes(key.split('→')[1]))) {
+          transferInfo = info;
+          break;
+        }
+      }
+    }
+    
+    // If found, adjust congestion based on peak hours
+    if (transferInfo) {
+      const peakHours = isPeakHours();
+      const baseCongestion = transferInfo.congestion || '';
+      
+      // During peak hours, use "High" congestion for all transfer stations
+      // Otherwise, use "Low" or "Medium" (default to "Medium" if not specified)
+      if (peakHours) {
+        transferInfo = {
+          ...transferInfo,
+          congestion: 'High'
+        };
+      } else {
+        // During off-peak, use lower congestion
+        // Check if the original congestion is "Very High" or "Extreme" -> use "Medium"
+        // Otherwise keep original or default to "Low"
+        const congestionLower = baseCongestion.toLowerCase();
+        if (congestionLower.includes('very high') || congestionLower.includes('extreme')) {
+          transferInfo = {
+            ...transferInfo,
+            congestion: 'Medium'
+          };
+        } else if (congestionLower.includes('high')) {
+          transferInfo = {
+            ...transferInfo,
+            congestion: 'Low'
+          };
+        } else {
+          // Keep original or default to "Low"
+          transferInfo = {
+            ...transferInfo,
+            congestion: baseCongestion || 'Low'
+          };
+        }
+      }
+    }
+    
+    return transferInfo;
+  };
   const lineColors: { [key: string]: string } = {
     'Red': '#DA291C',
     'Orange': '#ED8B00',
@@ -550,6 +726,13 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
       </div>
     );
   } else if (group.type === 'transfer') {
+    const transferInfo = getTransferInfo(
+      group.transfer_station_id || '',
+      group.transfer_from_line,
+      group.transfer_to_line,
+      group.fromStation
+    );
+    
     return (
       <div className="grouped-segment transfer-segment" role="listitem">
         <div className="grouped-segment-header">
@@ -557,12 +740,29 @@ function GroupedSegmentDisplay({ group, isExpanded, onToggle }: {
             Transfer
           </span>
           <span className="grouped-segment-route">at {group.fromStation}</span>
+          {transferInfo?.congestion && (
+            <CongestionBadge congestion={transferInfo.congestion} />
+          )}
         </div>
         {group.transfer_rating && (
           <div className={`transfer-rating transfer-rating-${group.transfer_rating}`} aria-label={`Transfer rating: ${group.transfer_rating}`}>
             <span className="transfer-rating-text">
               {group.transfer_rating.toUpperCase()}
             </span>
+          </div>
+        )}
+        {transferInfo && (
+          <div className="transfer-details" style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+            {transferInfo.platform_position && (
+              <div style={{ color: '#666', marginBottom: '0.25rem' }}>
+                <strong>Platform:</strong> {transferInfo.platform_position}
+              </div>
+            )}
+            {transferInfo.tip && (
+              <div style={{ color: '#666', fontStyle: 'italic' }}>
+                {transferInfo.tip}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -619,6 +819,7 @@ function App() {
   const [walkingSpeed, setWalkingSpeed] = useState<number>(5.0); // km/h
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
   const [expandedRoutes, setExpandedRoutes] = useState<Set<number>>(new Set());
+  const [transferStationData, setTransferStationData] = useState<any>(null);
 
   // Helper function to get line color
   const getLineColor = (lineName: string) => {
@@ -658,6 +859,23 @@ function App() {
       .then(res => res.json())
       .then(data => setRouteShapes(data))
       .catch(err => console.error('Error loading shapes:', err));
+  }, []);
+
+  // Load transfer station data on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/api/transfer-station-data`)
+      .then(res => res.json())
+      .then(data => {
+        // The backend returns { STATION_GUIDANCE: {...} }, so extract STATION_GUIDANCE
+        const stationData = data.STATION_GUIDANCE || data;
+        console.log('Loaded transfer station data:', { 
+          hasData: !!stationData, 
+          keys: Object.keys(stationData || {}).slice(0, 5),
+          sample: stationData && Object.keys(stationData)[0] ? stationData[Object.keys(stationData)[0]] : null
+        });
+        setTransferStationData(stationData);
+      })
+      .catch(err => console.error('Error loading transfer station data:', err));
   }, []);
 
   // Handle map click to find nearest station
@@ -1123,6 +1341,7 @@ function App() {
                               }
                               setExpandedGroups(newExpanded);
                             }}
+                            transferStationData={transferStationData}
                           />
                         ))}
             </div>
@@ -1202,6 +1421,7 @@ function App() {
                               }
                               setExpandedGroups(newExpanded);
                             }}
+                            transferStationData={transferStationData}
                           />
                         ))}
                       </div>
@@ -1301,22 +1521,23 @@ function App() {
                      aria-label="Route segments"
                      onClick={(e) => e.stopPropagation()}
                    >
-                     {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
-                       <GroupedSegmentDisplay
-                    key={idx}
-                         group={group}
-                         isExpanded={expandedGroups.has(idx)}
-                         onToggle={() => {
-                           const newExpanded = new Set(expandedGroups);
-                           if (newExpanded.has(idx)) {
-                             newExpanded.delete(idx);
-                           } else {
-                             newExpanded.add(idx);
-                           }
-                           setExpandedGroups(newExpanded);
-                         }}
-                       />
-                     ))}
+                        {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
+                          <GroupedSegmentDisplay
+                            key={idx}
+                            group={group}
+                            isExpanded={expandedGroups.has(idx)}
+                            onToggle={() => {
+                              const newExpanded = new Set(expandedGroups);
+                              if (newExpanded.has(idx)) {
+                                newExpanded.delete(idx);
+                              } else {
+                                newExpanded.add(idx);
+                              }
+                              setExpandedGroups(newExpanded);
+                            }}
+                            transferStationData={transferStationData}
+                          />
+                        ))}
                    </div>
                  )}
                </div>
@@ -1425,6 +1646,7 @@ function App() {
                             }
                             setExpandedGroups(newExpanded);
                           }}
+                          transferStationData={transferStationData}
                         />
                       ))}
           </div>

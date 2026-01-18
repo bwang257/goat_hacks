@@ -571,6 +571,17 @@ async def search_stations(query: str, limit: int = 20):
     ]
     return results[:limit]
 
+@app.get("/api/transfer-station-data")
+async def get_transfer_station_data():
+    """Get transfer station guidance data"""
+    try:
+        data_file = os.path.join(os.path.dirname(__file__), "data", "transfer_station_data.json")
+        with open(data_file, 'r') as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading transfer station data: {str(e)}")
+
 @app.get("/api/stations/{station_id}", response_model=StationInfo)
 async def get_station(station_id: str):
     """Get a specific station by ID"""
