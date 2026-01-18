@@ -434,6 +434,7 @@ class DijkstraRouter:
         start_station_id: str,
         end_station_id: str,
         mbta_client,
+        request_time: Optional[datetime] = None,
         max_alternatives: int = 3,
         debug: bool = False
     ) -> List[Route]:
@@ -467,10 +468,16 @@ class DijkstraRouter:
             if seg.transfer_rating is not None
         )
 
+        # Even if primary route has no risky transfers, we can still find later departure times
+        # This allows us to show alternative routes for later times
         if not has_risky_transfers:
             if debug:
-                print("Primary route has no risky transfers - no alternatives needed")
-            return []
+                print("Primary route has no risky transfers - finding later departure alternatives")
+
+        # Use request_time if provided, otherwise fall back to primary_route.departure_time
+        # request_time represents "now" when the user first requested the route
+        if request_time is None:
+            request_time = primary_route.departure_time
 
         if debug:
             print(f"Found risky transfers in primary route")
@@ -508,25 +515,41 @@ class DijkstraRouter:
                         print("  No route found")
                     continue
 
-                # Check if all transfers are "likely"
-                all_transfers_likely = all(
-                    seg.transfer_rating == "likely" or seg.transfer_rating is None
-                    for seg in alt_route.segments
-                )
+                # Recalculate total_time_seconds from original request time (now) to arrival
+                if alt_route.arrival_time:
+                    original_total_seconds = (alt_route.arrival_time - request_time).total_seconds()
+                    alt_route.total_time_seconds = original_total_seconds
+                    alt_route.total_time_minutes = round(original_total_seconds / 60, 1)
 
-                if all_transfers_likely:
+                # If primary route has risky transfers, only accept alternatives with all "likely" transfers
+                # Otherwise, accept any alternative route (for showing later departure times)
+                if has_risky_transfers:
+                    # Check if all transfers are "likely"
+                    all_transfers_likely = all(
+                        seg.transfer_rating == "likely" or seg.transfer_rating is None
+                        for seg in alt_route.segments
+                    )
+
+                    if all_transfers_likely:
+                        alternatives.append(alt_route)
+                        if debug:
+                            print(f"  ✓ Alternative found - all transfers LIKELY")
+                            print(f"    Total time: {alt_route.total_time_seconds/60:.1f} min")
+                            print(f"    Arrival: {alt_route.arrival_time.strftime('%I:%M %p')}")
+                    else:
+                        if debug:
+                            risky_count = sum(
+                                1 for seg in alt_route.segments
+                                if seg.transfer_rating in ["risky", "unlikely"]
+                            )
+                            print(f"  ✗ Still has {risky_count} risky transfer(s)")
+                else:
+                    # For non-risky primary routes, accept any alternative (later departure time)
                     alternatives.append(alt_route)
                     if debug:
-                        print(f"  ✓ Alternative found - all transfers LIKELY")
+                        print(f"  ✓ Alternative found - later departure")
                         print(f"    Total time: {alt_route.total_time_seconds/60:.1f} min")
                         print(f"    Arrival: {alt_route.arrival_time.strftime('%I:%M %p')}")
-                else:
-                    if debug:
-                        risky_count = sum(
-                            1 for seg in alt_route.segments
-                            if seg.transfer_rating in ["risky", "unlikely"]
-                        )
-                        print(f"  ✗ Still has {risky_count} risky transfer(s)")
 
             except Exception as e:
                 if debug:

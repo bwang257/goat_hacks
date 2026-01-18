@@ -13,7 +13,7 @@ import math
 import json
 import os
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import polyline
 
 app = FastAPI(title="MBTA Walking Time API")
@@ -936,7 +936,7 @@ async def find_route(
                 station_id_1,
                 station_id_2,
                 prefer_fewer_transfers
-            )
+                )
     
     if not route:
         # Get station names for better error message
@@ -956,21 +956,49 @@ async def find_route(
     )
 
     alternative_routes = []
-    if has_risky_transfers and use_realtime and mbta_client:
+    # Always fetch 2 alternatives for later departure times
+    if use_realtime and mbta_client:
         try:
-            # Get 1 alternative route with safer transfers (only if primary route is risky)
-            alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
-                primary_route=route,
-                start_station_id=station_id_1,
-                end_station_id=station_id_2,
-                mbta_client=mbta_client,
-                max_alternatives=1,  # Only return 1 safer alternative
-                debug=False
-            )
-            alternative_routes = alt_routes[:1]  # Ensure only 1 alternative is included
+            # If route has risky transfers, get safer alternatives
+            if has_risky_transfers:
+                alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
+                    primary_route=route,
+                    start_station_id=station_id_1,
+                    end_station_id=station_id_2,
+                    mbta_client=mbta_client,
+                    request_time=dep_time,
+                    max_alternatives=2,  # Get 2 alternatives
+                    debug=False
+                )
+                alternative_routes = alt_routes[:2]
+            else:
+                # For safe routes, find 2 routes with later departure times
+                base_departure = route.departure_time if route.departure_time else dep_time
+                delay_increments = [300, 600]  # 5 and 10 minutes later
+                
+                for delay_seconds in delay_increments:
+                    if len(alternative_routes) >= 2:
+                        break
+                    
+                    adjusted_departure = base_departure + timedelta(seconds=delay_seconds)
+                    try:
+                        alt_route = await DIJKSTRA_ROUTER.find_route(
+                            start_station_id=station_id_1,
+                            end_station_id=station_id_2,
+                            departure_time=adjusted_departure,
+                            mbta_client=mbta_client,
+                            debug=False
+                        )
+                        if alt_route and alt_route.arrival_time:
+                            # Recalculate total_time_seconds from original request time (now) to arrival
+                            original_total_seconds = (alt_route.arrival_time - dep_time).total_seconds()
+                            alt_route.total_time_seconds = original_total_seconds
+                            alt_route.total_time_minutes = round(original_total_seconds / 60, 1)
+                            alternative_routes.append(alt_route)
+                    except Exception as e:
+                        print(f"Error finding alternative route at +{delay_seconds/60:.0f}min: {e}")
         except Exception as e:
             print(f"Error finding alternative routes: {e}")
-    # If primary route is safe (no risky transfers), alternatives array remains empty
 
     segments = []
     for seg in route.segments:
@@ -1084,7 +1112,9 @@ async def find_route(
 
 @app.post("/api/route/alternatives", response_model=List[RouteResponse])
 async def get_additional_alternatives(
-    request: RouteRequest
+    request: RouteRequest,
+    offset: int = 0,
+    limit: int = 2
 ):
     """
     Fetch additional alternative routes (2 more routes) when user clicks "Show More Options".
@@ -1143,11 +1173,42 @@ async def get_additional_alternatives(
                 start_station_id=station_id_1,
                 end_station_id=station_id_2,
                 mbta_client=mbta_client,
+                request_time=dep_time,
                 max_alternatives=5,  # Fetch more to ensure we get 2 good alternatives
                 debug=False
             )
-            # Skip the first one (likely already shown) and take next 2
-            additional_alternatives = alt_routes[1:3] if len(alt_routes) > 1 else alt_routes[:2]
+            # Skip already shown alternatives based on offset, take up to limit
+            start_idx = offset
+            end_idx = offset + limit
+            additional_alternatives = alt_routes[start_idx:end_idx] if len(alt_routes) > start_idx else []
+            
+            # If we don't have enough alternatives from suggest_alternatives, try later departures
+            if len(additional_alternatives) < limit:
+                base_departure = primary_route.departure_time if primary_route.departure_time else dep_time
+                delay_increments = [300, 600, 900, 1200]  # 5, 10, 15, 20 minutes later
+                
+                for delay_seconds in delay_increments:
+                    if len(additional_alternatives) >= limit:
+                        break
+                    
+                    adjusted_departure = base_departure + timedelta(seconds=delay_seconds)
+                    try:
+                        alt_route = await DIJKSTRA_ROUTER.find_route(
+                            start_station_id=station_id_1,
+                            end_station_id=station_id_2,
+                            departure_time=adjusted_departure,
+                            mbta_client=mbta_client,
+                            debug=False
+                        )
+                        if alt_route and alt_route.arrival_time:
+                            # Recalculate total_time_seconds from original request time (now) to arrival
+                            original_total_seconds = (alt_route.arrival_time - dep_time).total_seconds()
+                            alt_route.total_time_seconds = original_total_seconds
+                            alt_route.total_time_minutes = round(original_total_seconds / 60, 1)
+                            if alt_route not in additional_alternatives:
+                                additional_alternatives.append(alt_route)
+                    except Exception as e:
+                        print(f"Error finding alternative route at +{delay_seconds/60:.0f}min: {e}")
         except Exception as e:
             print(f"Error finding additional alternatives: {e}")
     

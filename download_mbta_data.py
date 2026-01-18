@@ -259,36 +259,36 @@ async def fetch_mbta_data(api_key: str) -> Dict:
                 if len(connections_added) == 0:
                     # Fallback: if no trip data, use simple stop ordering
                     print(f"    No trip data found, using fallback method")
-                    route_stops_url = f"{base_url}/stops?filter[route]={route_id}"
-                    route_stops_response = await client.get(route_stops_url, headers=headers)
-                    route_stops_response.raise_for_status()
-                    route_stops_data = route_stops_response.json()
+                route_stops_url = f"{base_url}/stops?filter[route]={route_id}"
+                route_stops_response = await client.get(route_stops_url, headers=headers)
+                route_stops_response.raise_for_status()
+                route_stops_data = route_stops_response.json()
+                
+                ordered_stations = []
+                for stop in route_stops_data["data"]:
+                    parent_id = stop_to_parent.get(stop["id"], stop["id"])
+                    if parent_id in stations and parent_id not in ordered_stations:
+                        ordered_stations.append(parent_id)
+                
+                for i in range(len(ordered_stations) - 1):
+                    station_a = ordered_stations[i]
+                    station_b = ordered_stations[i + 1]
                     
-                    ordered_stations = []
-                    for stop in route_stops_data["data"]:
-                        parent_id = stop_to_parent.get(stop["id"], stop["id"])
-                        if parent_id in stations and parent_id not in ordered_stations:
-                            ordered_stations.append(parent_id)
+                    connection_a = {
+                        "station_id": station_b,
+                        "route_id": route_id,
+                        "line": routes[route_id]["display_name"]
+                    }
+                    connection_b = {
+                        "station_id": station_a,
+                        "route_id": route_id,
+                        "line": routes[route_id]["display_name"]
+                    }
                     
-                    for i in range(len(ordered_stations) - 1):
-                        station_a = ordered_stations[i]
-                        station_b = ordered_stations[i + 1]
-                        
-                        connection_a = {
-                            "station_id": station_b,
-                            "route_id": route_id,
-                            "line": routes[route_id]["display_name"]
-                        }
-                        connection_b = {
-                            "station_id": station_a,
-                            "route_id": route_id,
-                            "line": routes[route_id]["display_name"]
-                        }
-                        
-                        if connection_a not in stations[station_a]["connections"]:
-                            stations[station_a]["connections"].append(connection_a)
-                        if connection_b not in stations[station_b]["connections"]:
-                            stations[station_b]["connections"].append(connection_b)
+                    if connection_a not in stations[station_a]["connections"]:
+                        stations[station_a]["connections"].append(connection_a)
+                    if connection_b not in stations[station_b]["connections"]:
+                        stations[station_b]["connections"].append(connection_b)
             
             except httpx.HTTPStatusError as e:
                 print(f"    Warning: Could not build connections for route {route_id}: {e}")

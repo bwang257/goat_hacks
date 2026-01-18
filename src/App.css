@@ -352,17 +352,16 @@
 
 .result-card {
   background: linear-gradient(135deg, var(--white) 0%, var(--gray-50) 100%);
-  padding: var(--spacing-2xl);
+  padding: var(--spacing-xl);
   border-radius: var(--radius-xl);
   border: 1px solid var(--gray-200);
-  margin-bottom: var(--spacing-lg);
+  margin-bottom: var(--spacing-md);
   box-shadow: var(--shadow-md);
   transition: all var(--transition-base);
 }
 
 .result-card:hover {
   box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
 }
 
 .result-card-title {
@@ -843,9 +842,14 @@ body {
   background: var(--white);
   border: 2px solid var(--gray-200);
   border-radius: var(--radius-lg);
-  padding: var(--spacing-lg);
-  margin-bottom: var(--spacing-md);
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
   transition: all 0.2s ease;
+}
+
+.route-option-card {
+  padding: var(--spacing-md) !important;
+  margin-bottom: var(--spacing-sm) !important;
 }
 
 .route-option:hover {
@@ -855,7 +859,7 @@ body {
 
 .alternative-route-option {
   border-color: #86efac;
-  background: linear-gradient(to bottom, #ffffff, #f0fdf4);
+  background: #ffffff;
 }
 
 .alternative-route-option:hover {
@@ -939,10 +943,12 @@ body {
 .route-option-meta {
   font-size: 0.875rem;
   color: var(--gray-600);
-  margin-bottom: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
   display: flex;
   gap: var(--spacing-xs);
   flex-wrap: wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 /* ============================================================================
@@ -952,7 +958,7 @@ body {
 .grouped-segments-list {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-sm);
+  gap: 0;
 }
 
 .grouped-segment {
@@ -960,8 +966,9 @@ body {
   border: 1px solid var(--gray-200);
   border-left: 4px solid var(--gray-400);
   border-radius: var(--radius-md);
-  padding: var(--spacing-md);
+  padding: var(--spacing-sm);
   transition: all 0.2s ease;
+  margin-bottom: var(--spacing-xs);
 }
 
 .grouped-segment:hover {
@@ -999,9 +1006,8 @@ body {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--gray-900);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .grouped-segment-info {
@@ -1058,6 +1064,8 @@ body {
 
 .stop-name {
   font-weight: 500;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 /* More Alternatives Button */

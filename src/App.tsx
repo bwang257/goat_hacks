@@ -592,6 +592,24 @@ function App() {
   const [endStation, setEndStation] = useState<Station | null>(null);
   const [result, setResult] = useState<WalkingTimeResult | null>(null);
   const [sameLineRoute, setSameLineRoute] = useState<SameLineRouteResult | null>(null);
+
+  // Helper to get rating-based border color
+  const getRatingBorderColor = (segments: RouteSegment[], hasRiskyTransfers?: boolean): string => {
+    const transferSegments = segments.filter(s => s.transfer_rating);
+    if (transferSegments.length > 0) {
+      const hasUnlikely = transferSegments.some(s => s.transfer_rating === 'unlikely');
+      const hasRisky = transferSegments.some(s => s.transfer_rating === 'risky');
+      if (hasUnlikely) return '#dc2626'; // Red for unlikely
+      if (hasRisky) return '#d97706'; // Orange for risky
+      return '#059669'; // Green for likely
+    }
+    // If no risky transfers, show likely (green)
+    if (!hasRiskyTransfers) {
+      return '#059669'; // Green for likely
+    }
+    // Default to likely (green)
+    return '#059669';
+  };
   const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectingStation, setSelectingStation] = useState<'start' | 'end' | null>(null);
@@ -718,7 +736,42 @@ function App() {
           }
 
           // Use the comprehensive route result
-          setRouteResult(routeData);
+          // Always fetch 2 alternatives if not present or fewer than 2
+          let alternatives = routeData.alternatives || [];
+          console.log('Initial alternatives from route response:', alternatives.length);
+          
+          if (alternatives.length < 2) {
+            try {
+              const altResponse = await fetch(`${API_BASE}/api/route/alternatives?offset=${alternatives.length}&limit=${2 - alternatives.length}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  station_id_1: startStation.id,
+                  station_id_2: endStation.id,
+                  prefer_fewer_transfers: true,
+                  use_realtime: true
+                })
+              });
+
+              if (altResponse.ok) {
+                const additionalRoutes: RouteResult[] = await altResponse.json();
+                console.log('Fetched additional alternatives:', additionalRoutes.length);
+                if (additionalRoutes.length > 0) {
+                  // Merge with existing alternatives, ensuring we have up to 2
+                  alternatives = [...alternatives, ...additionalRoutes].slice(0, 2);
+                }
+              } else {
+                console.log('Alternatives endpoint returned error:', altResponse.status, await altResponse.text());
+              }
+            } catch (err) {
+              console.log('Error fetching alternatives:', err);
+            }
+          }
+
+          // Set route result with alternatives (ensure alternatives array exists)
+          const finalRouteData = { ...routeData, alternatives };
+          console.log('Final routeResult with alternatives:', finalRouteData.alternatives?.length || 0, finalRouteData.alternatives);
+          setRouteResult(finalRouteData);
           setRouteGeometry([]);
 
           // Build route segments for display
@@ -1041,7 +1094,10 @@ function App() {
                    }
                    setExpandedRoutes(newExpanded);
                  }}
-                 style={{ cursor: 'pointer' }}
+                 style={{ 
+                   cursor: 'pointer',
+                   border: `2px solid ${getRatingBorderColor(routeResult.segments, routeResult.has_risky_transfers)}`
+                 }}
                >
                  <div className="route-option-header">
                    <div className="route-option-title">
@@ -1058,15 +1114,20 @@ function App() {
                            </span>
                          );
                        }
-                       // If no risky transfers, show LIKELY badge
-                       if (!routeResult.has_risky_transfers && routeResult.num_transfers > 0) {
+                       // Show LIKELY badge if no risky transfers (including 0 transfers)
+                       if (!routeResult.has_risky_transfers) {
                          return (
                            <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
                              LIKELY
                            </span>
                          );
                        }
-                       return null;
+                       // Default to LIKELY if we can't determine
+                       return (
+                         <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                           LIKELY
+                         </span>
+                       );
                      })()}
                    </div>
                    <div className="route-option-time">
@@ -1079,10 +1140,15 @@ function App() {
                      <span>{formatTime(routeResult.departure_time)} - {formatTime(routeResult.arrival_time)}</span>
                    )}
                    <span> • {routeResult.num_transfers} {routeResult.num_transfers === 1 ? 'transfer' : 'transfers'}</span>
-                 </div>
+            </div>
             
                  {expandedRoutes.has(0) && (
-                   <div className="grouped-segments-list" role="list" aria-label="Route segments">
+                   <div 
+                     className="grouped-segments-list" 
+                     role="list" 
+                     aria-label="Route segments"
+                     onClick={(e) => e.stopPropagation()}
+                   >
                      {groupSegmentsByLine(routeResult.segments).map((group, idx) => (
                        <GroupedSegmentDisplay
                          key={idx}
@@ -1104,7 +1170,7 @@ function App() {
                </div>
 
               {/* Alternative Route Options - Always show 2 alternatives */}
-              {routeResult.alternatives && routeResult.alternatives.slice(0, 2).map((altRoute, altIdx) => (
+              {routeResult.alternatives && routeResult.alternatives.length > 0 && routeResult.alternatives.slice(0, 2).map((altRoute, altIdx) => (
                 <div 
                   key={`alt-${altIdx}`} 
                   className="result-card route-option-card alternative-route-option" 
@@ -1120,7 +1186,10 @@ function App() {
                     }
                     setExpandedRoutes(newExpanded);
                   }}
-                  style={{ cursor: 'pointer' }}
+                  style={{ 
+                    cursor: 'pointer',
+                    border: `2px solid ${getRatingBorderColor(altRoute.segments, altRoute.has_risky_transfers)}`
+                  }}
                 >
                   <div className="route-option-header">
                     <div className="route-option-title">
@@ -1137,16 +1206,24 @@ function App() {
                             </span>
                           );
                         }
-                        return null;
+                        // Show LIKELY badge if no risky transfers (including 0 transfers)
+                        if (!altRoute.has_risky_transfers) {
+                          return (
+                            <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                              LIKELY
+                            </span>
+                          );
+                        }
+                        // Default to LIKELY if we can't determine
+                        return (
+                          <span className="transfer-rating-badge transfer-rating-likely" aria-label="Transfer rating: LIKELY">
+                            LIKELY
+                          </span>
+                        );
                       })()}
                     </div>
                     <div className="route-option-time">
                       {formatDuration(altRoute.total_time_minutes)}
-                      {altRoute.total_time_minutes > routeResult.total_time_minutes && (
-                        <span className="time-difference-inline">
-                          (+{(altRoute.total_time_minutes - routeResult.total_time_minutes).toFixed(0)}m)
-                        </span>
-                      )}
                     </div>
                   </div>
 
@@ -1158,7 +1235,12 @@ function App() {
                   </div>
 
                   {expandedRoutes.has(1 + altIdx) && (
-                    <div className="grouped-segments-list" role="list" aria-label={`Alternative route ${altIdx + 1} segments`}>
+                    <div 
+                      className="grouped-segments-list" 
+                      role="list" 
+                      aria-label={`Alternative route ${altIdx + 1} segments`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {groupSegmentsByLine(altRoute.segments).map((group, idx) => (
                         <GroupedSegmentDisplay
                           key={`alt-${altIdx}-${idx}`}
