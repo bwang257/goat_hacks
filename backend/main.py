@@ -1270,42 +1270,30 @@ async def find_route(
     )
 
     alternative_routes = []
-    # Always fetch 2 alternatives for later departure times
+    # Always fetch 2 alternatives for later departure times (same route at later times)
     if use_realtime and mbta_client:
         try:
-            # If route has risky transfers, get safer alternatives
-            if has_risky_transfers:
-                alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
-                    primary_route=route,
-                    start_station_id=station_id_1,
-                    end_station_id=station_id_2,
-                    mbta_client=mbta_client,
-                    request_time=dep_time,
-                    max_alternatives=2,  # Get 2 alternatives
-                    debug=False
-                )
-                alternative_routes = alt_routes[:2]
-            else:
-                # For safe routes, use suggest_alternatives which handles later departures correctly
-                alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
-                    primary_route=route,
-                    start_station_id=station_id_1,
-                    end_station_id=station_id_2,
-                    mbta_client=mbta_client,
-                    request_time=dep_time,
-                    walking_speed_kmh=walking_speed_kmh,
-                    max_alternatives=2,  # Get 2 alternatives
-                    debug=False
-                )
-                # Filter to only include routes with later arrival times than primary
-                if route.arrival_time:
-                    alt_routes = [
-                        alt for alt in alt_routes 
-                        if alt.arrival_time and alt.arrival_time > route.arrival_time
-                    ]
-                # Sort by arrival time to ensure later arrivals come after earlier ones
-                alt_routes.sort(key=lambda r: r.arrival_time if r.arrival_time else datetime.max.replace(tzinfo=timezone.utc))
-                alternative_routes = alt_routes[:2]
+            # Get alternatives - these will be the same route at later departure times
+            alt_routes = await DIJKSTRA_ROUTER.suggest_alternatives(
+                primary_route=route,
+                start_station_id=station_id_1,
+                end_station_id=station_id_2,
+                mbta_client=mbta_client,
+                request_time=dep_time,
+                walking_speed_kmh=walking_speed_kmh,
+                max_alternatives=2,  # Get 2 alternatives
+                debug=False
+            )
+            # Filter to only include valid routes with later arrival times than primary
+            if route.arrival_time:
+                alt_routes = [
+                    alt for alt in alt_routes 
+                    if alt.arrival_time and alt.arrival_time > route.arrival_time
+                    and alt.departure_time and alt.arrival_time > alt.departure_time
+                ]
+            # Sort by arrival time to ensure later arrivals come after earlier ones
+            alt_routes.sort(key=lambda r: r.arrival_time if r.arrival_time else datetime.max.replace(tzinfo=timezone.utc))
+            alternative_routes = alt_routes[:2]  # Take up to 2 alternatives
         except Exception as e:
             print(f"Error finding alternative routes: {e}")
 
@@ -1470,10 +1458,22 @@ async def find_route(
             )
             alt_segments.append(alt_seg)
 
+        # Ensure total_time_seconds is calculated from departure_time to arrival_time (actual trip duration)
+        if alt_route.departure_time and alt_route.arrival_time:
+            trip_duration_seconds = (alt_route.arrival_time - alt_route.departure_time).total_seconds()
+            alt_route.total_time_seconds = trip_duration_seconds
+            alt_route.total_time_minutes = round(trip_duration_seconds / 60, 1)
+        else:
+            # Fallback: use existing total_time_seconds if available, otherwise calculate from segments
+            if alt_route.total_time_seconds <= 0:
+                total_seg_time = sum(seg.time_seconds for seg in alt_route.segments)
+                alt_route.total_time_seconds = total_seg_time
+            alt_route.total_time_minutes = round(alt_route.total_time_seconds / 60, 1)
+        
         alt_response = RouteResponse(
             segments=alt_segments,
             total_time_seconds=alt_route.total_time_seconds,
-            total_time_minutes=round(alt_route.total_time_seconds / 60, 1),
+            total_time_minutes=alt_route.total_time_minutes,
             total_distance_meters=alt_route.total_distance_meters,
             total_distance_km=round(alt_route.total_distance_meters / 1000, 2),
             num_transfers=alt_route.num_transfers,
@@ -1483,6 +1483,11 @@ async def find_route(
             alternatives=[]
         )
         alternatives_response.append(alt_response)
+    
+    # Ensure total_time_seconds is calculated from departure_time to arrival_time (actual trip duration)
+    if route.departure_time and route.arrival_time:
+        trip_duration_seconds = (route.arrival_time - route.departure_time).total_seconds()
+        route.total_time_seconds = trip_duration_seconds
     
     return RouteResponse(
         segments=segments,
@@ -1595,10 +1600,16 @@ async def get_additional_alternatives(
                             debug=False
                         )
                         if alt_route and alt_route.arrival_time:
-                            # Recalculate total_time_seconds from original request time (now) to arrival
-                            original_total_seconds = (alt_route.arrival_time - dep_time).total_seconds()
-                            alt_route.total_time_seconds = original_total_seconds
-                            alt_route.total_time_minutes = round(original_total_seconds / 60, 1)
+                            # Recalculate total_time_seconds from departure_time to arrival_time (actual trip duration)
+                            if alt_route.departure_time:
+                                trip_duration_seconds = (alt_route.arrival_time - alt_route.departure_time).total_seconds()
+                                alt_route.total_time_seconds = trip_duration_seconds
+                                alt_route.total_time_minutes = round(trip_duration_seconds / 60, 1)
+                            else:
+                                # Fallback if departure_time is not available
+                                original_total_seconds = (alt_route.arrival_time - dep_time).total_seconds()
+                                alt_route.total_time_seconds = original_total_seconds
+                                alt_route.total_time_minutes = round(original_total_seconds / 60, 1)
                             if alt_route not in additional_alternatives:
                                 additional_alternatives.append(alt_route)
                     except Exception as e:
@@ -1609,6 +1620,18 @@ async def get_additional_alternatives(
     # Convert to response format
     alternatives_response = []
     for alt_route in additional_alternatives:
+        # Ensure total_time_seconds is calculated from departure_time to arrival_time (actual trip duration)
+        if alt_route.departure_time and alt_route.arrival_time:
+            trip_duration_seconds = (alt_route.arrival_time - alt_route.departure_time).total_seconds()
+            alt_route.total_time_seconds = trip_duration_seconds
+            alt_route.total_time_minutes = round(trip_duration_seconds / 60, 1)
+        else:
+            # Fallback: use existing total_time_seconds if available, otherwise calculate from segments
+            if alt_route.total_time_seconds <= 0:
+                total_seg_time = sum(seg.time_seconds for seg in alt_route.segments)
+                alt_route.total_time_seconds = total_seg_time
+            alt_route.total_time_minutes = round(alt_route.total_time_seconds / 60, 1)
+        
         alt_segments = []
         for seg in alt_route.segments:
             alt_seg = RouteSegmentResponse(
@@ -1671,10 +1694,22 @@ async def get_additional_alternatives(
             if seg.transfer_rating is not None
         )
         
+        # Ensure total_time_seconds is calculated from departure_time to arrival_time (actual trip duration)
+        if alt_route.departure_time and alt_route.arrival_time:
+            trip_duration_seconds = (alt_route.arrival_time - alt_route.departure_time).total_seconds()
+            alt_route.total_time_seconds = trip_duration_seconds
+            alt_route.total_time_minutes = round(trip_duration_seconds / 60, 1)
+        else:
+            # Fallback: use existing total_time_seconds if available, otherwise calculate from segments
+            if alt_route.total_time_seconds <= 0:
+                total_seg_time = sum(seg.time_seconds for seg in alt_route.segments)
+                alt_route.total_time_seconds = total_seg_time
+            alt_route.total_time_minutes = round(alt_route.total_time_seconds / 60, 1)
+        
         alt_response = RouteResponse(
             segments=alt_segments,
             total_time_seconds=alt_route.total_time_seconds,
-            total_time_minutes=round(alt_route.total_time_seconds / 60, 1),
+            total_time_minutes=alt_route.total_time_minutes,
             total_distance_meters=alt_route.total_distance_meters,
             total_distance_km=round(alt_route.total_distance_meters / 1000, 2),
             num_transfers=alt_route.num_transfers,

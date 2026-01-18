@@ -197,6 +197,7 @@ class DijkstraRouter:
         total_distance = 0
         num_transfers = 0
         current_line = None
+        route_departure_time = None  # Track actual first train departure time
 
         for i, edge in enumerate(path):
             edge_type = edge.get("type", "train")
@@ -216,6 +217,10 @@ class DijkstraRouter:
                 # Speed conversion: km/h to m/s
                 speed_ms = walking_speed_kmh * 1000 / 3600
                 walk_time = walk_distance / speed_ms if speed_ms > 0 else edge.get("time_seconds", 0)
+
+                # Track the actual departure time for walking-only routes
+                if route_departure_time is None:
+                    route_departure_time = current_time
 
                 arrival_time = current_time + timedelta(seconds=walk_time)
 
@@ -290,6 +295,10 @@ class DijkstraRouter:
                             next_train = valid_departures[0]
                             dep_time = next_train["departure_time"]
                             wait_time = (dep_time - current_time).total_seconds()
+                            
+                            # Track the actual first train departure time for the route
+                            if route_departure_time is None:
+                                route_departure_time = dep_time
 
                             # Use static travel time for arrival estimate
                             arr_time = dep_time + timedelta(seconds=static_travel_time)
@@ -334,6 +343,9 @@ class DijkstraRouter:
                                 print(f"  No upcoming trains - using estimates")
 
                             dep_time = current_time
+                            # Track the actual departure time if this is the first segment
+                            if route_departure_time is None:
+                                route_departure_time = dep_time
                             arr_time = dep_time + timedelta(seconds=static_travel_time)
 
                             segment = RouteSegment(
@@ -353,6 +365,9 @@ class DijkstraRouter:
                     else:
                         # No MBTA client - use static times
                         dep_time = current_time
+                        # Track the actual departure time if this is the first segment
+                        if route_departure_time is None:
+                            route_departure_time = dep_time
                         arr_time = dep_time + timedelta(seconds=static_travel_time)
 
                         segment = RouteSegment(
@@ -376,6 +391,9 @@ class DijkstraRouter:
 
                     # Fallback to static times
                     dep_time = current_time
+                    # Track the actual departure time if this is the first segment
+                    if route_departure_time is None:
+                        route_departure_time = dep_time
                     arr_time = dep_time + timedelta(seconds=static_travel_time)
 
                     segment = RouteSegment(
@@ -403,14 +421,22 @@ class DijkstraRouter:
             enriched_segments.append(segment)
 
         # Build final route
-        # Calculate total_time from request_time (when user clicked) to arrival
-        # This includes wait time for first train, not just travel time
-        total_time = (current_time - request_time).total_seconds()
+        # Use the actual first train departure time if available, otherwise use the search start time
+        actual_departure_time = route_departure_time if route_departure_time else departure_time
+        
+        # Calculate total_time from actual departure_time to arrival_time (actual trip duration)
+        # This is the time spent on the route itself, not including wait time before departure
+        if actual_departure_time and current_time:
+            total_time = (current_time - actual_departure_time).total_seconds()
+        else:
+            # Fallback: use request_time if departure_time is not available
+            total_time = (current_time - request_time).total_seconds() if request_time else 0
 
         if debug:
             print()
-            print(f"Total journey time (from now): {total_time/60:.1f} minutes")
+            print(f"Total journey time (departure to arrival): {total_time/60:.1f} minutes")
             print(f"Total transfers: {num_transfers}")
+            print(f"Departure time: {actual_departure_time.strftime('%I:%M %p') if actual_departure_time else 'N/A'}")
             print(f"Arrival time: {current_time.strftime('%I:%M %p')}")
 
         return Route(
@@ -418,7 +444,7 @@ class DijkstraRouter:
             total_time_seconds=total_time,
             total_distance_meters=total_distance,
             num_transfers=num_transfers,
-            departure_time=departure_time,
+            departure_time=actual_departure_time,
             arrival_time=current_time
         )
 
@@ -564,9 +590,14 @@ class DijkstraRouter:
                         print("  No route found")
                     continue
 
-                # total_time_seconds should already be calculated from request_time to arrival_time
-                # But ensure it's correct by recalculating
-                if alt_route.arrival_time and request_time:
+                # total_time_seconds should be calculated from departure_time to arrival_time (actual trip duration)
+                # Recalculate to ensure it's correct
+                if alt_route.arrival_time and alt_route.departure_time:
+                    calculated_total_seconds = (alt_route.arrival_time - alt_route.departure_time).total_seconds()
+                    alt_route.total_time_seconds = calculated_total_seconds
+                    alt_route.total_time_minutes = round(calculated_total_seconds / 60, 1)
+                elif alt_route.arrival_time and request_time:
+                    # Fallback if departure_time is not available
                     calculated_total_seconds = (alt_route.arrival_time - request_time).total_seconds()
                     alt_route.total_time_seconds = calculated_total_seconds
                     alt_route.total_time_minutes = round(calculated_total_seconds / 60, 1)

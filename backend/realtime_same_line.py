@@ -473,11 +473,16 @@ class RealtimeSameLineRouter:
                         if best_match:
                             real_arrival = best_match
 
-                if real_arrival:
+                if real_arrival and real_arrival > train.departure_time:
                     est_arrival = real_arrival
                     total_time = (est_arrival - train.departure_time).total_seconds() / 60
                 else:
                     # Fallback to estimated schedule
+                    est_arrival = train.departure_time + timedelta(seconds=scheduled_time)
+                    total_time = scheduled_time / 60
+                
+                # Ensure arrival is always after departure
+                if est_arrival <= train.departure_time:
                     est_arrival = train.departure_time + timedelta(seconds=scheduled_time)
                     total_time = scheduled_time / 60
 
@@ -485,7 +490,7 @@ class RealtimeSameLineRouter:
                     "departure_time": train.departure_time.isoformat(),
                     "arrival_time": est_arrival.isoformat(),
                     "minutes_until_departure": round(minutes_until, 1),
-                    "total_trip_minutes": round(total_time, 0),
+                    "total_trip_minutes": round(total_time, 1),
                     "status": train.status or "Scheduled",
                     "vehicle_id": train.vehicle_id,
                     "countdown_text": self._format_countdown(minutes_until)

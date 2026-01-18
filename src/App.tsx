@@ -1206,7 +1206,7 @@ function App() {
             station_id_2: endStation.id,
             prefer_fewer_transfers: true,
             use_realtime: true,
-            walking_speed_kmh: walkingSpeed
+            walking_speed_kmh: walkingSpeed * 1.60934 // Convert mph to km/h
           })
         });
 
@@ -1239,10 +1239,12 @@ function App() {
           }
 
           // Use the comprehensive route result
-          // Always fetch 2 alternatives if not present or fewer than 2
+          // Always fetch 2 alternatives for later departure times (same route at later times)
           let alternatives = routeData.alternatives || [];
           console.log('Initial alternatives from route response:', alternatives.length);
           
+          // Always fetch more alternatives if we have fewer than 2
+          // These will be the same route at later departure times
           if (alternatives.length < 2) {
             try {
               const altResponse = await fetch(`${API_BASE}/api/route/alternatives?offset=${alternatives.length}&limit=${2 - alternatives.length}`, {
@@ -1261,8 +1263,15 @@ function App() {
                 const additionalRoutes: RouteResult[] = await altResponse.json();
                 console.log('Fetched additional alternatives:', additionalRoutes.length);
                 if (additionalRoutes.length > 0) {
+                  // Filter to ensure valid routes (departure < arrival)
+                  const validRoutes = additionalRoutes.filter(alt => {
+                    if (!alt.departure_time || !alt.arrival_time) return false;
+                    const dep = new Date(alt.departure_time);
+                    const arr = new Date(alt.arrival_time);
+                    return arr > dep && arr > new Date(routeData.departure_time || 0);
+                  });
                   // Merge with existing alternatives, ensuring we have up to 2
-                  alternatives = [...alternatives, ...additionalRoutes].slice(0, 2);
+                  alternatives = [...alternatives, ...validRoutes].slice(0, 2);
                 }
               } else {
                 console.log('Alternatives endpoint returned error:', altResponse.status, await altResponse.text());
@@ -1353,7 +1362,7 @@ function App() {
         body: JSON.stringify({
           station_id_1: startStation.id,
           station_id_2: endStation.id,
-          walking_speed_kmh: walkingSpeed
+          walking_speed_kmh: walkingSpeed * 1.60934 // Convert mph to km/h
         })
       });
 
@@ -1671,39 +1680,60 @@ function App() {
           {/* Same-line route result - Convert to RouteResult format */}
           {sameLineRoute && sameLineRoute.is_same_line && sameLineRoute.line_color && (() => {
             // Convert next_trains to RouteResult format
-            const sameLineRoutes: RouteResult[] = (sameLineRoute.next_trains || []).slice(0, 3).map((train) => {
-              // Create a single train segment
-              const segment: RouteSegment = {
-                from_station_id: startStation?.id || '',
-                from_station_name: sameLineRoute.from_station_name || startStation?.name || '',
-                to_station_id: endStation?.id || '',
-                to_station_name: sameLineRoute.to_station_name || endStation?.name || '',
-                type: 'train',
-                line: sameLineRoute.line_name,
-                route_id: '',
-                time_seconds: (train.total_trip_minutes || 0) * 60,
-                time_minutes: train.total_trip_minutes || 0,
-                distance_meters: sameLineRoute.distance_meters || 0,
-                departure_time: train.departure_time,
-                arrival_time: train.arrival_time,
-                status: train.status || 'Scheduled'
-              };
+            const sameLineRoutes: RouteResult[] = (sameLineRoute.next_trains || [])
+              .filter((train) => {
+                // Filter out invalid trains where arrival is before or equal to departure
+                if (!train.departure_time || !train.arrival_time) return false;
+                const depTime = new Date(train.departure_time);
+                const arrTime = new Date(train.arrival_time);
+                return arrTime > depTime; // Only include valid trains
+              })
+              .slice(0, 3)
+              .map((train) => {
+                // Parse times and ensure they're valid
+                const depTime = new Date(train.departure_time);
+                const arrTime = new Date(train.arrival_time);
+                
+                // Calculate total_time from departure_time to arrival_time (actual trip duration)
+                const tripDurationMs = arrTime.getTime() - depTime.getTime();
+                const tripDurationMinutes = Math.max(0, tripDurationMs / (1000 * 60));
+                
+                // Use the calculated duration, fallback to total_trip_minutes if calculation is invalid
+                const totalTimeMinutes = tripDurationMinutes > 0 ? tripDurationMinutes : (train.total_trip_minutes || 0);
+                
+                // Create a single train segment
+                const segment: RouteSegment = {
+                  from_station_id: startStation?.id || '',
+                  from_station_name: sameLineRoute.from_station_name || startStation?.name || '',
+                  to_station_id: endStation?.id || '',
+                  to_station_name: sameLineRoute.to_station_name || endStation?.name || '',
+                  type: 'train',
+                  line: sameLineRoute.line_name,
+                  route_id: '',
+                  time_seconds: totalTimeMinutes * 60,
+                  time_minutes: totalTimeMinutes,
+                  distance_meters: sameLineRoute.distance_meters || 0,
+                  departure_time: train.departure_time,
+                  arrival_time: train.arrival_time,
+                  status: train.status || 'Scheduled'
+                };
 
-              return {
-                segments: [segment],
-                total_time_seconds: (train.total_trip_minutes || 0) * 60,
-                total_time_minutes: train.total_trip_minutes || 0,
-                total_distance_meters: sameLineRoute.distance_meters || 0,
-                total_distance_km: (sameLineRoute.distance_meters || 0) / 1000,
-                num_transfers: 0,
-                departure_time: train.departure_time,
-                arrival_time: train.arrival_time,
-                has_risky_transfers: false,
-                alternatives: []
-              };
-            });
+                return {
+                  segments: [segment],
+                  total_time_seconds: totalTimeMinutes * 60,
+                  total_time_minutes: totalTimeMinutes,
+                  total_distance_meters: sameLineRoute.distance_meters || 0,
+                  total_distance_km: (sameLineRoute.distance_meters || 0) / 1000,
+                  num_transfers: 0,
+                  departure_time: train.departure_time,
+                  arrival_time: train.arrival_time,
+                  has_risky_transfers: false,
+                  alternatives: []
+                };
+              });
 
             const primaryRoute = sameLineRoutes[0];
+            // Show 2 alternative routes (later trains) - same route at later times
             const alternativeRoutes = sameLineRoutes.slice(1, 3);
 
             return (
@@ -1780,7 +1810,7 @@ function App() {
                   </div>
                 )}
 
-                {/* Alternative Same-Line Route Cards */}
+                {/* Alternative Same-Line Route Cards - Show later trains (same route at later times) */}
                 {alternativeRoutes.map((altRoute, altIdx) => (
                   <div 
                     key={`same-line-alt-${altIdx}`} 
@@ -1815,13 +1845,8 @@ function App() {
                       </div>
                       <div className="route-option-time">
                         {formatDuration(altRoute.total_time_minutes)}
-                        {altRoute.total_time_minutes > primaryRoute.total_time_minutes && (
-                          <span className="time-difference-inline">
-                            (+{(altRoute.total_time_minutes - primaryRoute.total_time_minutes).toFixed(0)}m)
-                          </span>
-                        )}
-              </div>
-            </div>
+                      </div>
+                    </div>
 
                     <div className="route-option-meta">
                       {altRoute.departure_time && altRoute.arrival_time && (
@@ -1973,7 +1998,7 @@ function App() {
                  )}
                </div>
 
-              {/* Alternative Route Options - Always show 2 alternatives */}
+              {/* Alternative Route Options - Always show 2 alternatives (same route at later times) */}
               {routeResult.alternatives && routeResult.alternatives.length > 0 && routeResult.alternatives.slice(0, 2).map((altRoute, altIdx) => (
                 <div 
                   key={`alt-${altIdx}`} 
